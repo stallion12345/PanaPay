@@ -1,0 +1,152 @@
+{
+  "id": "WH-4V303662TC8299729-2HF18393TE5689226",
+  "event_version": "1.0",
+  "create_time": "2026-11-05T00:17:17.890Z",
+  "resource_type": "invoices",
+  "event_type": "INVOICING.INVOICE.PAID",
+  "summary": "An invoice is paid, partially paid, or payment is made and is pending.",
+  "resource": {
+    "invoice": {
+      "id": "INV2-4LAY-5LDV-7LXE-HA4A",
+      "status": "PAID",
+      "detail": {
+        "reference": "panapay-1793837269403",
+        "currency_code": "USD",
+        "note": "This invoice was created by the PanaPay smoke test in the PayPal sandbox.",
+        "memo": "PanaPay sandbox invoice",
+        "category_code": "SHIPPABLE",
+        "invoice_number": "INV-1793837267806",
+        "invoice_date": "2026-11-04",
+        "payment_term": {
+          "term_type": "NO_DUE_DATE"
+        },
+        "viewed_by_recipient": false,
+        "group_draft": false,
+        "metadata": {
+          "create_time": "2026-11-05T00:07:53Z",
+          "last_update_time": "2026-11-05T00:17:02Z",
+          "first_sent_time": "2026-11-05T00:07:55Z",
+          "last_sent_time": "2026-11-05T00:07:55Z",
+          "created_by_flow": "REGULAR_SINGLE",
+          "recipient_view_url": "https://www.sandbox.paypal.com/invoice/p/#4LAY5LDV7LXEHA4A",
+          "invoicer_view_url": "https://www.sandbox.paypal.com/invoice/details/INV2-4LAY-5LDV-7LXE-HA4A",
+          "caller_type": "API_V2_INVOICE",
+          "spam_info": {}
+        },
+        "archived": false
+      },
+      "invoicer": {
+        "name": {
+          "given_name": "Ngozi",
+          "surname": "Merchant",
+          "full_name": "Ngozi Merchant"
+        },
+        "email_address": "***@***"
+      },
+      "primary_recipients": [
+        {
+          "billing_info": {
+            "name": {
+              "given_name": "Sandbox",
+              "surname": "Customer",
+              "full_name": "Sandbox Customer"
+            },
+            "email_address": "***@***"
+          }
+        }
+      ],
+      "items": [
+        {
+          "id": "ITEM-7RA61179HG9185242",
+          "name": "Sandbox invoice smoke test",
+          "quantity": "1",
+          "unit_amount": {
+            "currency_code": "USD",
+            "value": "25.00"
+          }
+        }
+      ],
+      "configuration": {
+        "tax_calculated_after_discount": false,
+        "tax_inclusive": false,
+        "allow_tip": false,
+        "allow_only_pay_by_bank": false,
+        "allow_vba_payments": false,
+        "save_item_for_future": true,
+        "template_id": "TEMP-80Y86506X5812870X"
+      },
+      "amount": {
+        "breakdown": {
+          "item_total": {
+            "currency_code": "USD",
+            "value": "25.00"
+          },
+          "discount": {
+            "invoice_discount": {
+              "amount": {
+                "currency_code": "USD",
+                "value": "0.00"
+              }
+            },
+            "item_discount": {
+              "currency_code": "USD",
+              "value": "0.00"
+            }
+          },
+          "tax_total": {
+            "currency_code": "USD",
+            "value": "0.00"
+          }
+        },
+        "currency_code": "USD",
+        "value": "25.00"
+      },
+      "due_amount": {
+        "currency_code": "USD",
+        "value": "0.00"
+      },
+      "payments": {
+        "paid_amount": {
+          "currency_code": "USD",
+          "value": "25.00"
+        },
+        "transactions": [
+          {
+            "type": "PAYPAL",
+            "payment_id": "5GC99320NR895115S",
+            "transaction_type": "SALE",
+            "payment_date": "2026-11-04",
+            "payment_date_time": "2026-11-04T16:17:02Z",
+            "method": "PAYPAL",
+            "amount": {
+              "currency_code": "USD",
+              "value": "25.00"
+            },
+            "transaction_status": "SUCCESS"
+          }
+        ]
+      },
+      "links": [
+        {
+          "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-4LAY-5LDV-7LXE-HA4A",
+          "rel": "self",
+          "method": "GET"
+        }
+      ],
+      "unilateral": false,
+      "settings": {}
+    }
+  },
+  "links": [
+    {
+      "href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/WH-4V303662TC8299729-2HF18393TE5689226",
+      "rel": "self",
+      "method": "GET"
+    },
+    {
+      "href": "https://api.sandbox.paypal.com/v1/notifications/webhooks-events/WH-4V303662TC8299729-2HF18393TE5689226/resend",
+      "rel": "resend",
+      "method": "POST"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="PanaPay">
+  <defs>
+    <linearGradient id="panapay-emerald" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d7a5f"/>
+      <stop offset="100%" stop-color="#064e3b"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="44" height="44" rx="12" fill="url(#panapay-emerald)"/>
+  <circle cx="30" cy="18" r="9" fill="#c9a84c"/>
+  <circle cx="30" cy="18" r="5.5" fill="none" stroke="#f5f0e0" stroke-width="1.8"/>
+  <path d="M15 38V16.5c0-2 1.4-3.5 3.4-3.5h5.8c3.6 0 6.3 2.7 6.3 6.2 0 3.6-2.7 6.3-6.3 6.3H19.5" fill="none" stroke="#f5f0e0" stroke-width="3.6" stroke-linecap="round"/>
+</svg>
