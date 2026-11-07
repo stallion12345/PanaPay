@@ -1,6 +1,6 @@
 const CHICAGO_TZ = 'America/Chicago';
 
-function toChicagoDateKey(value) {
+export function toChicagoDateKey(value) {
   if (value === undefined || value === null || value === '') {
     return null;
   }

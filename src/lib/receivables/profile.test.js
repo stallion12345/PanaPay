@@ -22,7 +22,7 @@ test('zero invoices returns empty profile with no history', () => {
     usualMethod: null,
     enoughHistory: false,
     label: null,
-    evidence: ['No invoice history yet. Based on 0 invoices.'],
+    evidence: ['Not enough history yet. Based on 0 invoices.'],
   });
 });
 
@@ -68,7 +68,8 @@ test('three invoices with two late payments produce Usually late label', () => {
   assert.equal(profile.paidLateCount, 2);
   assert.equal(profile.avgDaysLate, 3);
   assert.equal(profile.label, 'Usually late');
-  assert.equal(profile.evidence[0].includes('Paid 2 of 3 invoices late'), true);
+  assert.equal(profile.evidence[0], '2 of 3 paid invoices were paid late, 3 days late on average.');
+  assert.equal(profile.evidence[1], 'Based on 3 invoices.');
 });
 
 test('three invoices with one late and two on time produce Mixed label', () => {
@@ -199,7 +200,8 @@ test('evidence uses the sample count and wording template', () => {
     now: '2026-11-05T12:00:00-06:00',
   });
 
-  assert.equal(profile.evidence[0], 'Paid 2 of 3 invoices late, 3 days late on average. Based on 3 invoices.');
+  assert.equal(profile.evidence[0], '2 of 3 paid invoices were paid late, 3 days late on average.');
+  assert.equal(profile.evidence[1], 'Based on 3 invoices.');
 });
 
 test('partially paid invoices do not count as paid late', () => {
@@ -214,4 +216,106 @@ test('partially paid invoices do not count as paid late', () => {
 
   assert.equal(profile.paidLateCount, 1);
   assert.equal(profile.label, 'Mixed');
+});
+
+test('due 2026-10-23 paid 2026-10-30T18:00:00.000Z is 7 days late', () => {
+  const profile = buildProfile({
+    invoices: [{ amount_cents: 10000, paid_cents: 10000, due_at: '2026-10-23', paid_at: '2026-10-30T18:00:00.000Z' }],
+    now: '2026-11-05T12:00:00-06:00',
+  });
+
+  assert.equal(profile.paidLateCount, 1);
+  assert.equal(profile.avgDaysLate, 7);
+});
+
+test('paid on the due date is 0 days late and is not counted late', () => {
+  const profile = buildProfile({
+    invoices: [{ amount_cents: 10000, paid_cents: 10000, due_at: '2026-10-23', paid_at: '2026-10-23T18:00:00.000Z' }],
+    now: '2026-11-05T12:00:00-06:00',
+  });
+
+  assert.equal(profile.paidLateCount, 0);
+  assert.equal(profile.avgDaysLate, 0);
+});
+
+test('evidence: all paid invoices paid on time (0 late)', () => {
+  const profile = buildProfile({
+    invoices: [
+      { amount_cents: 10000, paid_cents: 10000, due_at: '2026-11-01', paid_at: '2026-11-01T10:00:00-06:00' },
+      { amount_cents: 12000, paid_cents: 12000, due_at: '2026-11-02', paid_at: '2026-11-02T11:00:00-06:00' },
+      { amount_cents: 15000, paid_cents: 15000, due_at: '2026-11-03', paid_at: '2026-11-03T17:00:00-06:00' },
+    ],
+    now: '2026-11-05T12:00:00-06:00',
+  });
+
+  assert.equal(profile.enoughHistory, true);
+  assert.equal(profile.paidLateCount, 0);
+  assert.equal(profile.avgDaysLate, 0);
+  assert.equal(profile.evidence[0], 'All 3 paid invoices were paid on time.');
+  assert.equal(profile.evidence[1], 'Based on 3 invoices.');
+  assert.equal(profile.evidence.length, 2);
+});
+
+test('evidence: some late invoices with one-decimal average', () => {
+  const profile = buildProfile({
+    invoices: [
+      { amount_cents: 10000, paid_cents: 10000, due_at: '2026-11-01', paid_at: '2026-11-02T00:00:00-06:00' },
+      { amount_cents: 12000, paid_cents: 12000, due_at: '2026-11-02', paid_at: '2026-11-04T00:00:00-06:00' },
+      { amount_cents: 15000, paid_cents: 15000, due_at: '2026-11-03', paid_at: '2026-11-03T10:00:00-06:00' },
+    ],
+    now: '2026-11-05T12:00:00-06:00',
+  });
+
+  assert.equal(profile.enoughHistory, true);
+  assert.equal(profile.paidLateCount, 2);
+  assert.equal(profile.avgDaysLate, 1.5);
+  assert.equal(profile.evidence[0], '2 of 3 paid invoices were paid late, 1.5 days late on average.');
+  assert.equal(profile.evidence[1], 'Based on 3 invoices.');
+});
+
+test('evidence: exactly three invoices flips enoughHistory on', () => {
+  const profile = buildProfile({
+    invoices: [
+      { amount_cents: 10000, paid_cents: 10000, due_at: '2026-11-01', paid_at: '2026-11-05T00:00:00-06:00' },
+      { amount_cents: 12000, paid_cents: 12000, due_at: '2026-11-02', paid_at: '2026-11-02T11:00:00-06:00' },
+      { amount_cents: 15000, paid_cents: 15000, due_at: '2026-11-03', paid_at: '2026-11-03T17:00:00-06:00' },
+    ],
+    now: '2026-11-05T12:00:00-06:00',
+  });
+
+  assert.equal(profile.enoughHistory, true);
+  assert.equal(profile.paidLateCount, 1);
+  assert.equal(profile.avgDaysLate, 4);
+  assert.equal(profile.evidence[0], '1 of 3 paid invoices were paid late, 4 days late on average.');
+  assert.equal(profile.evidence[1], 'Based on 3 invoices.');
+});
+
+test('evidence: unpaid past-due invoices are listed separately', () => {
+  const profile = buildProfile({
+    invoices: [
+      { amount_cents: 10000, paid_cents: 0, due_at: '2026-10-20' },
+      { amount_cents: 10000, paid_cents: 0, due_at: '2026-10-21' },
+      { amount_cents: 10000, paid_cents: 10000, due_at: '2026-11-01', paid_at: '2026-11-01T10:00:00-06:00' },
+    ],
+    now: '2026-11-05T12:00:00-06:00',
+  });
+
+  assert.equal(profile.enoughHistory, true);
+  assert.equal(profile.paidLateCount, 0);
+  assert.equal(profile.evidence[0], 'All 1 paid invoices were paid on time.');
+  assert.equal(profile.evidence[1], '2 more past due and unpaid.');
+  assert.equal(profile.evidence[2], 'Based on 3 invoices.');
+});
+
+test('evidence: one invoice uses singular invoice and no lateness sentence', () => {
+  const profile = buildProfile({
+    invoices: [{ amount_cents: 10000, paid_cents: 10000, due_at: '2026-10-23', paid_at: '2026-10-30T18:00:00.000Z' }],
+    now: '2026-11-05T12:00:00-06:00',
+  });
+
+  assert.equal(profile.enoughHistory, false);
+  assert.equal(profile.paidLateCount, 1);
+  assert.equal(profile.avgDaysLate, 7);
+  assert.equal(profile.evidence.length, 1);
+  assert.equal(profile.evidence[0], 'Not enough history yet. Based on 1 invoice.');
 });

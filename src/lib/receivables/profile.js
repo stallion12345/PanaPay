@@ -1,51 +1,12 @@
+import { toChicagoDateKey } from './status.js';
+
 function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function parseDate(value) {
-  if (!value) {
-    return null;
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  return date;
-}
-
-function chicagoDayKey(dateLike, fallback = null) {
-  const date = parseDate(dateLike) ?? parseDate(fallback);
-  if (!date) {
-    return null;
-  }
-
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-
-  const parts = formatter.formatToParts(date);
-  const values = {};
-  for (const part of parts) {
-    if (part.type !== 'literal') {
-      values[part.type] = part.value;
-    }
-  }
-
-  if (!values.year || !values.month || !values.day) {
-    return null;
-  }
-
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
 function dayDifferenceInDays(startValue, endValue) {
-  const startKey = chicagoDayKey(startValue);
-  const endKey = chicagoDayKey(endValue);
+  const startKey = toChicagoDateKey(startValue);
+  const endKey = toChicagoDateKey(endValue);
 
   if (!startKey || !endKey) {
     return 0;
@@ -92,24 +53,31 @@ function getUsualMethod(payments) {
   return winner;
 }
 
-function buildEvidence({ paidLateCount, lateDaysTotal, invoiceCount, enoughHistory, legacyCount }) {
-  const sampleCount = enoughHistory ? Math.max(legacyCount, invoiceCount) : invoiceCount;
+function formatAvgDaysLate(avg) {
+  return avg % 1 === 0 ? avg : avg.toFixed(1);
+}
 
-  if (sampleCount === 0) {
-    return ['No invoice history yet. Based on 0 invoices.'];
+function buildEvidence({ paidLateCount, paidCount, lateDaysTotal, unpaidPastDueCount, invoiceCount, enoughHistory }) {
+  if (!enoughHistory) {
+    return [`Not enough history yet. Based on ${invoiceCount} ${invoiceCount === 1 ? 'invoice' : 'invoices'}.`];
   }
 
-  const avgDaysLate = sampleCount > 0 && paidLateCount > 0
-    ? Number((lateDaysTotal / paidLateCount).toFixed(1))
-    : 0;
+  const avgDaysLate = paidLateCount > 0 ? Number((lateDaysTotal / paidLateCount).toFixed(1)) : 0;
+  const lines = [];
 
-  const daysLabel = avgDaysLate === 0 ? '0 days' : `${avgDaysLate % 1 === 0 ? avgDaysLate : avgDaysLate.toFixed(1)} days`;
-
-  if (paidLateCount === 0) {
-    return [`Paid 0 of ${sampleCount} invoices late, ${daysLabel} late on average. Based on ${sampleCount} invoices.`];
+  if (paidCount > 0 && paidLateCount > 0) {
+    lines.push(`${paidLateCount} of ${paidCount} paid invoices were paid late, ${formatAvgDaysLate(avgDaysLate)} days late on average.`);
+  } else if (paidCount > 0 && paidLateCount === 0) {
+    lines.push(`All ${paidCount} paid invoices were paid on time.`);
   }
 
-  return [`Paid ${paidLateCount} of ${sampleCount} invoices late, ${daysLabel} late on average. Based on ${sampleCount} invoices.`];
+  if (unpaidPastDueCount > 0) {
+    lines.push(`${unpaidPastDueCount} more past due and unpaid.`);
+  }
+
+  lines.push(`Based on ${invoiceCount} ${invoiceCount === 1 ? 'invoice' : 'invoices'}.`);
+
+  return lines;
 }
 
 function hasPastDueUnpaid(invoice, now) {
@@ -124,8 +92,8 @@ function hasPastDueUnpaid(invoice, now) {
     return false;
   }
 
-  const dueDate = chicagoDayKey(dueAt);
-  const todayKey = chicagoDayKey(now ?? new Date().toISOString());
+  const dueDate = toChicagoDateKey(dueAt);
+  const todayKey = toChicagoDateKey(now ?? new Date().toISOString());
   if (!dueDate || !todayKey) {
     return false;
   }
@@ -167,6 +135,12 @@ export function buildProfile({ invoices = [], promises = [], payments = [], now 
   const lateDaysTotal = lateInvoices.reduce((sum, value) => sum + value, 0);
   const avgDaysLate = paidLateCount > 0 ? Number((lateDaysTotal / paidLateCount).toFixed(1)) : 0;
 
+  const paidCount = invoiceList.filter((invoice) => {
+    const amountCents = Number(invoice?.amount_cents ?? 0);
+    const paidCents = Number(invoice?.paid_cents ?? 0);
+    return amountCents > 0 && paidCents >= amountCents;
+  }).length;
+
   const historyInvoices = invoiceList.filter((invoice) => {
     const amountCents = Number(invoice?.amount_cents ?? 0);
     const paidCents = Number(invoice?.paid_cents ?? 0);
@@ -175,6 +149,12 @@ export function buildProfile({ invoices = [], promises = [], payments = [], now 
     }
     return hasPastDueUnpaid(invoice, now);
   });
+
+  const unpaidPastDueCount = historyInvoices.filter((invoice) => {
+    const amountCents = Number(invoice?.amount_cents ?? 0);
+    const paidCents = Number(invoice?.paid_cents ?? 0);
+    return paidCents < amountCents;
+  }).length;
 
   const enoughHistory = historyInvoices.length >= 3;
 
@@ -196,10 +176,11 @@ export function buildProfile({ invoices = [], promises = [], payments = [], now 
 
   const evidence = buildEvidence({
     paidLateCount,
+    paidCount,
     lateDaysTotal,
+    unpaidPastDueCount,
     invoiceCount: historyInvoices.length || invoiceCount,
     enoughHistory,
-    legacyCount: historyInvoices.length || 0,
   });
 
   return {

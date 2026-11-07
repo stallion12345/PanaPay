@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node --env-file=.env src/server.js",
     "test": "node --test --test-concurrency=1 ./src/**/*.test.js",
-    "seed": "node --env-file=.env scripts/seed-base.mjs"
+    "seed": "node --env-file=.env scripts/seed-base.mjs",
+    "seed:history": "node --env-file=.env scripts/seed-history.mjs"
   },
   "keywords": [
     "paypal",
