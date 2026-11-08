@@ -23,6 +23,7 @@ export const EXTRACTION_SYSTEM_PROMPT = [
   'isPromise is true only when the customer commits to paying, not when they only ask questions or make excuses.',
   'Work out relative dates ("Friday", "tomorrow", "next week") from the date given in the user message.',
   'Vague wording such as "soon", "when I can" or "later" means promisedDate null and confidence below 0.5.',
+  'If someone other than the customer will pay, or the date or amount is approximate ("about", "around", "maybe", "I think"), confidence must be 0.6 or lower.',
   'amountCents is only set when the customer names an amount, in cents.',
 ].join('\n');
 
