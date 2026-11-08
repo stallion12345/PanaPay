@@ -4,7 +4,7 @@ process.env.PANAPAY_DB_PATH = ':memory:';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { derive, getStatusReasonLabel } from './status.js';
+import { computeDaysLate, derive, getStatusReasonLabel } from './status.js';
 
 function invoice(overrides = {}) {
   return {
@@ -390,4 +390,134 @@ test('promise dated today in Chicago is promised regardless of time of day', () 
   });
 
   assert.equal(result.status, 'promised');
+});
+
+const lateNow = '2026-11-05T12:00:00-06:00';
+
+test('computeDaysLate returns 0 when the due date is in the future', () => {
+  assert.equal(
+    computeDaysLate(
+      { amount_cents: 10000, paid_cents: 0, due_at: '2026-11-12', paid_at: null },
+      lateNow
+    ),
+    0
+  );
+});
+
+test('computeDaysLate returns 0 when the invoice is due today', () => {
+  assert.equal(
+    computeDaysLate(
+      { amount_cents: 10000, paid_cents: 0, due_at: '2026-11-05', paid_at: null },
+      lateNow
+    ),
+    0
+  );
+});
+
+test('computeDaysLate counts days from the due date to now for an unpaid overdue invoice', () => {
+  assert.equal(
+    computeDaysLate(
+      { amount_cents: 10000, paid_cents: 0, due_at: '2026-11-01', paid_at: null },
+      lateNow
+    ),
+    4
+  );
+});
+
+test('computeDaysLate counts days from the due date to now for a broken promise', () => {
+  assert.equal(
+    computeDaysLate(
+      { amount_cents: 10000, paid_cents: 0, due_at: '2026-11-01', paid_at: null },
+      lateNow
+    ),
+    4
+  );
+});
+
+test('computeDaysLate counts days from the due date to now for a partially paid past-due invoice', () => {
+  assert.equal(
+    computeDaysLate(
+      { amount_cents: 10000, paid_cents: 3000, due_at: '2026-11-01', paid_at: null },
+      lateNow
+    ),
+    4
+  );
+});
+
+test('computeDaysLate returns 0 when paid before the due date', () => {
+  assert.equal(
+    computeDaysLate(
+      {
+        amount_cents: 10000,
+        paid_cents: 10000,
+        due_at: '2026-11-05',
+        paid_at: '2026-11-04T10:00:00-06:00',
+      },
+      lateNow
+    ),
+    0
+  );
+});
+
+test('computeDaysLate returns 0 when paid on the due date', () => {
+  assert.equal(
+    computeDaysLate(
+      {
+        amount_cents: 10000,
+        paid_cents: 10000,
+        due_at: '2026-11-05',
+        paid_at: '2026-11-05T09:00:00-06:00',
+      },
+      lateNow
+    ),
+    0
+  );
+});
+
+test('computeDaysLate counts days from the due date to the paid date when paid late', () => {
+  assert.equal(
+    computeDaysLate(
+      {
+        amount_cents: 10000,
+        paid_cents: 10000,
+        due_at: '2026-11-01',
+        paid_at: '2026-11-04T10:00:00-06:00',
+      },
+      lateNow
+    ),
+    3
+  );
+});
+
+test('computeDaysLate returns 0 for a fully paid invoice with no paid_at', () => {
+  assert.equal(
+    computeDaysLate(
+      { amount_cents: 10000, paid_cents: 10000, due_at: '2026-11-01', paid_at: null },
+      lateNow
+    ),
+    0
+  );
+});
+
+test('computeDaysLate returns 0 when there is no due date', () => {
+  assert.equal(
+    computeDaysLate({ amount_cents: 10000, paid_cents: 0, due_at: null, paid_at: null }, lateNow),
+    0
+  );
+});
+
+test('computeDaysLate is computed in America/Chicago: an evening UTC payment on the due date is not late', () => {
+  // 2026-11-05T05:00:00Z is 2026-11-04T23:00:00 in Chicago (CST, UTC-6)
+  assert.equal(
+    computeDaysLate(
+      {
+        amount_cents: 10000,
+        paid_cents: 10000,
+        due_at: '2026-11-04',
+        paid_at: '2026-11-05T05:00:00Z',
+      },
+      lateNow
+    ),
+    0
+  );
 });

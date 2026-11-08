@@ -8,7 +8,8 @@ import { categorize } from './lib/categorizer.js';
 import { evaluateEscalation } from './lib/escalation-rules.js';
 import { limitAlarm, lowPoint, projectBalance, weeklyBuckets } from './lib/forecast.js';
 import { createInvoice, createPayout, extractInvoiceId, getInvoice, sendInvoice, verifyWebhookSignature } from './lib/paypal.js';
-
+import { derive, toChicagoDateKey, computeDaysLate } from './lib/receivables/status.js';
+import { buildProfile } from './lib/receivables/profile.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
 const port = Number.parseInt(process.env.PORT || '3000', 10);
@@ -1036,7 +1037,123 @@ app.get('/api/payouts/:id', (req, res) => {
 
   res.json({ ok: true, payout: row });
 });
+const STATUS_RANK = {
+  broken_promise: 0,
+  overdue: 1,
+  due_today: 2,
+  partially_paid: 3,
+  promised: 4,
+  issued: 5,
+  paid_late: 6,
+  paid: 7,
+};
 
+function buildInvoiceSummary(invoice, now) {
+  const customer = db.prepare('SELECT name FROM customer WHERE id = ?').get(invoice.customer_id);
+  const promises = db
+    .prepare('SELECT * FROM promise WHERE invoice_id = ? AND merchant_id = ?')
+    .all(invoice.id, DEFAULT_MERCHANT_ID);
+  const derived = derive({ invoice, promises, now });
+
+  return {
+    invoiceId: invoice.id,
+    paypalInvoiceId: invoice.paypal_invoice_id,
+    customerId: invoice.customer_id,
+    customerName: customer?.name ?? null,
+    amountCents: invoice.amount_cents,
+    currency: invoice.currency,
+    dueAt: invoice.due_at,
+    paidCents: invoice.paid_cents,
+    paidAt: invoice.paid_at,
+    daysLate: computeDaysLate(invoice, now),
+    status: derived.status,
+    reason: derived.reason,
+    source: invoice.source,
+  };
+}
+
+app.get('/api/receivables', (_req, res) => {
+  const now = new Date().toISOString();
+  const invoices = db
+    .prepare('SELECT * FROM invoice WHERE merchant_id = ?')
+    .all(DEFAULT_MERCHANT_ID);
+
+  const summaries = invoices.map((invoice) => buildInvoiceSummary(invoice, now));
+
+  summaries.sort(
+    (a, b) => (STATUS_RANK[a.status] ?? 99) - (STATUS_RANK[b.status] ?? 99),
+  );
+
+  res.json({ ok: true, invoices: summaries });
+});
+
+app.get('/api/customers', (_req, res) => {
+  const customers = db
+    .prepare('SELECT id, name, email, paypal_email FROM customer WHERE merchant_id = ?')
+    .all(DEFAULT_MERCHANT_ID);
+
+  res.json({
+    ok: true,
+    customers: customers.map((c) => ({
+      id: c.id,
+      name: c.name,
+      email: c.email,
+      canInvoice: Boolean(c.paypal_email && !String(c.paypal_email).endsWith('@example.com')),
+    })),
+  });
+});
+
+app.get('/api/customers/:id', (req, res) => {
+  const customerId = Number(req.params.id);
+  const customer = db
+    .prepare('SELECT * FROM customer WHERE id = ? AND merchant_id = ?')
+    .get(customerId, DEFAULT_MERCHANT_ID);
+
+  if (!customer) {
+    return res.status(404).json({ ok: false, error: 'Customer not found.' });
+  }
+
+  const now = new Date().toISOString();
+  const invoices = db
+    .prepare('SELECT * FROM invoice WHERE customer_id = ? AND merchant_id = ?')
+    .all(customerId, DEFAULT_MERCHANT_ID);
+
+  const allPromises = db
+    .prepare('SELECT * FROM promise WHERE customer_id = ? AND merchant_id = ?')
+    .all(customerId, DEFAULT_MERCHANT_ID);
+
+  const notes = db
+    .prepare('SELECT * FROM customer_note WHERE customer_id = ? AND merchant_id = ? ORDER BY created_at')
+    .all(customerId, DEFAULT_MERCHANT_ID);
+
+  const invoicesWithStatus = invoices.map((invoice) => {
+    const invPromises = allPromises.filter((p) => p.invoice_id === invoice.id);
+    const derived = derive({ invoice, promises: invPromises, now });
+    return {
+      ...invoice,
+      status: derived.status,
+      reason: derived.reason,
+      daysLate: computeDaysLate(invoice, now),
+    };
+  });
+
+  const profile = buildProfile({
+    invoices: invoices,
+    promises: allPromises,
+    payments: [],
+    now,
+  });
+
+  res.json({
+    ok: true,
+    customer,
+    invoices: invoicesWithStatus,
+    notes,
+    promises: allPromises,
+    profile,
+    nextAction: null,
+  });
+});
 app.use((req, res) => {
   res.status(404).json({ ok: false, error: 'Not found' });
 });

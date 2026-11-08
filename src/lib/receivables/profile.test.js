@@ -286,7 +286,7 @@ test('evidence: exactly three invoices flips enoughHistory on', () => {
   assert.equal(profile.enoughHistory, true);
   assert.equal(profile.paidLateCount, 1);
   assert.equal(profile.avgDaysLate, 4);
-  assert.equal(profile.evidence[0], '1 of 3 paid invoices were paid late, 4 days late on average.');
+  assert.equal(profile.evidence[0], '1 of 3 paid invoices was paid late, 4 days late on average.');
   assert.equal(profile.evidence[1], 'Based on 3 invoices.');
 });
 

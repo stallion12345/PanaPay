@@ -4,7 +4,7 @@ function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function dayDifferenceInDays(startValue, endValue) {
+export function dayDifferenceInDays(startValue, endValue) {
   const startKey = toChicagoDateKey(startValue);
   const endKey = toChicagoDateKey(endValue);
 
@@ -66,7 +66,8 @@ function buildEvidence({ paidLateCount, paidCount, lateDaysTotal, unpaidPastDueC
   const lines = [];
 
   if (paidCount > 0 && paidLateCount > 0) {
-    lines.push(`${paidLateCount} of ${paidCount} paid invoices were paid late, ${formatAvgDaysLate(avgDaysLate)} days late on average.`);
+    const verb = paidLateCount === 1 ? 'was' : 'were';
+    lines.push(`${paidLateCount} of ${paidCount} paid invoices ${verb} paid late, ${formatAvgDaysLate(avgDaysLate)} days late on average.`);
   } else if (paidCount > 0 && paidLateCount === 0) {
     lines.push(`All ${paidCount} paid invoices were paid on time.`);
   }

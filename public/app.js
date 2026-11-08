@@ -1,701 +1,483 @@
-﻿const state = { summary: null, ledger: [], forecast: null, loading: true };
-const app = document.getElementById('app');
-
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;',
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 }[char]));
 
-function formatMoney(valueCents) {
-  const cents = Number(valueCents ?? 0);
-  const usd = cents / 100;
+// One money helper: formats cents, and converts dollars to integer cents.
+const formatMoney = (cents) => {
+  const usd = Number(cents ?? 0) / 100;
   return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2,
   }).format(usd);
+};
+const toCents = (dollars) => Math.max(0, Math.round(Number(dollars) * 100));
+
+const ICON_PATHS = {
+  plane: `<path d="M14 2 2 7.5l4.5 2L8.5 14 14 2z"/><path d="M6.5 9.5 14 2"/>`,
+  calendar: `<rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/>`,
+  alert: `<path d="M8 2 14.5 13.5h-13z"/><path d="M8 6.5v3.5M8 12h.01"/>`,
+  'calendar-check': `<rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3M5.8 10.2l1.6 1.6 3-3"/>`,
+  'circle-cross': `<circle cx="8" cy="8" r="6"/><path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4"/>`,
+  'half-circle': `<circle cx="8" cy="8" r="6"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/>`,
+  'circle-check': `<circle cx="8" cy="8" r="6"/><path d="M5.5 8.2l1.8 1.8 3.4-3.6"/>`,
+  'clock-check': `<circle cx="7" cy="7" r="5"/><path d="M7 4.2V7l1.8 1M9.5 11.5l1.5 1.5 3-3"/>`,
+  clock: `<circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2 1.2"/>`,
+  circle: `<circle cx="8" cy="8" r="6"/>`,
+  dot: `<circle cx="8" cy="8" r="1.5" fill="currentColor"/>`,
+  x: `<path d="M3.5 3.5l9 9M3.5 12.5l9-9"/>`,
+};
+function icon(name) {
+  return `<svg class="icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ''}</svg>`;
+}
+function tint(hex, alpha) {
+  const c = hex.charAt(0) === '#' ? hex.slice(1) : hex;
+  const r = parseInt(c.slice(0, 2), 16);
+  const g = parseInt(c.slice(2, 4), 16);
+  const b = parseInt(c.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+const STATUS_ICONS = {
+  issued: { label: 'Sent', icon: 'plane', color: '#5e6f6a' },
+  due_today: { label: 'Due today', icon: 'calendar', color: '#c9972f' },
+  overdue: { label: 'Overdue', icon: 'alert', color: '#b3322b' },
+  promised: { label: 'Promised', icon: 'calendar-check', color: '#2f7f9f' },
+  broken_promise: { label: 'Promise broken', icon: 'circle-cross', color: '#b3322b' },
+  partially_paid: { label: 'Part paid', icon: 'half-circle', color: '#c9972f' },
+  paid: { label: 'Paid', icon: 'circle-check', color: '#0d7a5f' },
+  paid_late: { label: 'Paid late', icon: 'clock-check', color: '#8a9a2f' },
+  open: { label: 'Open', icon: 'clock', color: '#5e6f6a' },
+  kept: { label: 'Kept', icon: 'circle-check', color: '#0d7a5f' },
+  broken: { label: 'Broken', icon: 'circle-cross', color: '#b3322b' },
+  unconfirmed: { label: 'Unconfirmed', icon: 'clock', color: '#c9972f' },
+};
+function statusChip(status) {
+  const info = STATUS_ICONS[String(status).toLowerCase()] || { label: String(status), icon: 'circle', color: '#5e6f6a' };
+  return `<span class="status-chip" style="color:${info.color}; border-color:${tint(info.color, 0.2)}; background:${tint(info.color, 0.08)}">${icon(info.icon)}<span class="txt">${escapeHtml(info.label)}</span></span>`;
 }
 
-function badgeClass(status) {
-  const value = String(status || '').toLowerCase();
-  if (value.includes('completed') || value.includes('success')) return 'success';
-  if (value.includes('pending') || value.includes('created')) return 'pending';
-  if (value.includes('failed') || value.includes('refunded')) return 'failed';
-  return 'pending';
+const app = document.getElementById('app');
+let gridApi = null;
+let pollTimer = null;
+let currentRoute = 'receivables';
+let initialLoad = true;
+let selectedInvoiceId = null;
+
+async function getJson(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+async function postJson(path, body) {
+  const res = await fetch(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || data.message || `Request failed (${res.status})`);
+  return data;
 }
 
 function renderShell() {
   return `
-    <header class="topbar">
-      <a class="brand" href="#/home"><span>Pana<b>Pay</b></span></a>
-      <a class="icon-btn" href="#/settings" data-route="settings" aria-label="Settings">⚙️</a>
-    </header>
-    <nav class="tabs" aria-label="Main navigation">
-      <a href="#/home" data-route="home">🏠 Home</a>
-      <a href="#/ledger" data-route="ledger">📒 Ledger</a>
-      <a href="#/pay" data-route="pay">💸 Pay supplier</a>
-      <a href="#/assistant" data-route="assistant">🤖 Assistant</a>
-    </nav>
-  `;
-}
-
-function renderLoading(message = 'Loading your cash flow…') {
-  app.innerHTML = `
-    ${renderShell()}
-    <section class="card loading-state" aria-live="polite">
-      <div class="spinner" aria-hidden="true"></div>
-      <p>${escapeHtml(message)}</p>
-    </section>
-  `;
-}
-
-function renderHome() {
-  const summary = state.summary || { weekly_limit: 0, spent_this_week: 0, safe_to_spend: 0, percent_used: 0 };
-  const seedData = window.SEED || {};
-  const lowPoint = seedData.lowPoint || {};
-  const upcoming = Array.isArray(seedData.upcoming) ? seedData.upcoming : [];
-  const weeks = Array.isArray(seedData.weeks) ? seedData.weeks : [];
-  const aiSummary = seedData.aiSummary || 'No AI summary available yet.';
-  const safe = Number(summary.safe_to_spend ?? 0);
-  const spent = Number(summary.spent_this_week ?? 0);
-  const limit = Number(summary.weekly_limit ?? 0);
-  const percent = limit > 0 ? Math.min(Math.round((spent / limit) * 100), 100) : 0;
-
-  app.innerHTML = `
-    ${renderShell()}
-    <div class="date">${escapeHtml(new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }))}</div>
-    <h1 class="page-title">Your money this week</h1>
-    <div class="home-grid">
-      <div>
-        <section class="hero">
-          <div>
-            <div class="label">Safe to spend this week</div>
-            <div class="big">${escapeHtml(formatMoney(safe))}</div>
-            <div class="sub">${escapeHtml(formatMoney(spent))} spent of your ${escapeHtml(formatMoney(limit))} weekly limit</div>
-          </div>
-          <div class="ring" aria-label="${percent}% of weekly limit used">
-            <svg viewBox="0 0 120 120">
-              <circle cx="60" cy="60" r="52" fill="none" stroke="#dcefe3" stroke-width="12"></circle>
-              <circle cx="60" cy="60" r="52" fill="none" stroke="#c9972f" stroke-width="12" stroke-linecap="round" stroke-dasharray="${Math.min((percent / 100) * 326.72, 326.72)} 326.72"></circle>
-            </svg>
-            <div class="pct">${percent}%</div>
-          </div>
-        </section>
-
-        <section class="alert">
-          <div class="ic">⚠️</div>
-          <div>
-            <h3>Heads up about this week</h3>
-            <p>You have used ${percent}% of your weekly limit. You may run short on ${escapeHtml(lowPoint.dateLabel || 'this week')}.</p>
-          </div>
-          <a class="btn" href="#/ledger">Check the ledger</a>
-        </section>
-
-        <section class="card" style="margin-top:20px;">
-          <h2>Coming up</h2>
-          <ul class="list">
-            ${upcoming.map((item) => `
-              <li>
-                <div class="dot">${Number(item.amount || 0) > 0 ? '↘' : '↗'}</div>
-                <div class="meta">
-                  <div class="name">${escapeHtml(item.name || 'Upcoming item')}</div>
-                  <div class="note">${escapeHtml(item.note || '')} · ${escapeHtml(item.date || '')}</div>
-                </div>
-                <div class="amt ${Number(item.amount || 0) > 0 ? 'in' : ''}">${Number(item.amount || 0) > 0 ? '+' : ''}${escapeHtml(formatMoney(Number(item.amount || 0) * 100))}</div>
-              </li>
-            `).join('') || '<li class="empty-inline">No upcoming items.</li>'}
-          </ul>
-        </section>
-      </div>
-
-      <div>
-        <section class="card chart">
-          <h2>Next 4 weeks</h2>
-          <svg viewBox="0 0 640 300" role="img" aria-label="Cash forecast chart">
-            <line x1="52" x2="624" y1="250" y2="250" stroke="#dfe5df" />
-            ${[0, 500, 1000, 1500, 2000].map((value) => `
-              <g>
-                <line x1="52" x2="624" y1="${250 - (value / 2000) * 200}" y2="${250 - (value / 2000) * 200}" stroke="#e8e0cd" stroke-dasharray="3 4" />
-                <text x="44" y="${254 - (value / 2000) * 200}" text-anchor="end" font-size="12" fill="#5e6f6a">$${(value / 1000).toFixed(0)}k</text>
-              </g>
-            `).join('')}
-            ${weeks.map((week, idx) => {
-              const x = 52 + idx * 150 + 25;
-              const inBar = Number(week.in || 0);
-              const outBar = Number(week.out || 0);
-              return `
-                <g>
-                  <rect x="${x - 26}" y="${250 - (inBar / 2000) * 200}" width="18" height="${(inBar / 2000) * 200}" fill="#1b6e4f" rx="3"></rect>
-                  <rect x="${x + 10}" y="${250 - (outBar / 2000) * 200}" width="18" height="${(outBar / 2000) * 200}" fill="#d1a84f" rx="3"></rect>
-                  <text x="${x + 6}" y="290" text-anchor="middle" font-size="12" fill="#5e6f6a">${escapeHtml(String(week.label || '').split(' ')[0])}</text>
-                </g>
-              `;
-            }).join('')}
-          </svg>
-          <div class="legend">
-            <span><i style="background:#1b6e4f"></i>Money in</span>
-            <span><i style="background:#d1a84f"></i>Money out</span>
-            <span><i style="background:#2f7f9f"></i>Left over</span>
-          </div>
-          <div class="note-bar">⚠️ ${escapeHtml(lowPoint.note || 'No forecast warning.')}</div>
-          <div class="ai"><span class="tag">AI</span><span>${escapeHtml(aiSummary)}</span></div>
-        </section>
+    <div class="layout">
+      <aside class="sidebar">
+        <a class="brand" href="#/receivables" aria-label="PanaPay home">Pana<b>Pay</b></a>
+        <nav aria-label="Main navigation">
+          <a href="#/overview" data-route="overview" class="nav-link">Overview</a>
+          <a href="#/receivables" data-route="receivables" class="nav-link">Receivables</a>
+        </nav>
+        <div class="foot">PanaPay &nbsp;·&nbsp; Merchant dashboard</div>
+      </aside>
+      <div class="main">
+        <header class="topbar">
+          <h1 id="page-title">Receivables</h1>
+          <div class="toolbar" id="toolbar"></div>
+        </header>
+        <div id="panel-root"></div>
+        <div id="modal-root"></div>
+        <div id="view"></div>
       </div>
     </div>
   `;
 }
 
-function renderLedger() {
-  const shell = renderShell();
+function setupNav() {
+  document.querySelectorAll('.nav-link').forEach((a) => {
+    a.classList.toggle('active', a.dataset.route === currentRoute);
+  });
+}
 
-  if (state.loading) {
-    app.innerHTML = `${shell}<section class="card loading-state"><div class="spinner" aria-hidden="true"></div><p>Loading your ledger…</p></section>`;
-    return;
+function renderApp() {
+  if (!app.innerHTML.trim()) {
+    app.innerHTML = renderShell();
   }
-
-  if (!state.ledger.length) {
-    app.innerHTML = `${shell}<section class="card empty-state"><h2>Ledger</h2><p>No entries yet. As soon as money moves in or out, it will appear here.</p></section>`;
-    return;
+  currentRoute = location.hash.replace(/^#\//, '') || 'receivables';
+  setupNav();
+  if (currentRoute === 'overview') {
+    stopPolling();
+    renderOverview();
+  } else {
+    renderReceivables();
   }
+}
 
-  app.innerHTML = `${shell}<section class="card"><h2>Ledger</h2><div id="ledgerGrid" class="ag-theme-alpine" style="height:420px;width:100%;"></div></section>`;
-
-  if (typeof agGrid === 'undefined') {
-    app.innerHTML = `${shell}<section class="card"><h2>Ledger</h2><table><thead><tr><th>Date</th><th>Name</th><th>Description</th><th>Category</th><th>Amount</th><th>Status</th></tr></thead><tbody>${state.ledger.map((entry) => `
-      <tr>
-        <td>${escapeHtml(entry.occurred_at ? new Date(entry.occurred_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—')}</td>
-        <td>${escapeHtml(entry.name || 'General expense')}</td>
-        <td>${escapeHtml(entry.description || entry.category || '—')}</td>
-        <td>${escapeHtml(entry.category || 'General')}</td>
-        <td>${escapeHtml(formatMoney(entry.amount_cents ?? entry.amount ?? 0))}</td>
-        <td><span class="status-chip ${badgeClass(entry.status)}">${escapeHtml(String(entry.status || 'pending'))}</span></td>
-      </tr>
-    `).join('')}</tbody></table></section>`;
-    return;
-  }
-
-  const gridOptions = {
-    rowData: state.ledger.map((entry) => ({
-      date: entry.occurred_at ? new Date(entry.occurred_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—',
-      name: entry.name || 'General expense',
-      description: entry.description || entry.category || '—',
-      category: entry.category || 'General',
-      category_reason: entry.category_reason || '',
-      category_confidence: Number(entry.category_confidence ?? 1),
-      amount: Number(entry.amount_cents ?? entry.amount ?? 0),
-      status: entry.status || 'pending',
-    })),
-    defaultColDef: {
-      resizable: true,
-      sortable: true,
-      filter: false,
-    },
-    columnDefs: [
-      { headerName: 'Date', field: 'date', minWidth: 120 },
-      { headerName: 'Name', field: 'name', minWidth: 180 },
-      { headerName: 'Description', field: 'description', minWidth: 220 },
-      {
-        headerName: 'Category',
-        field: 'category',
-        minWidth: 180,
-        cellRenderer: (params) => {
-          const category = String(params.value || 'General');
-          const reason = String(params.data?.category_reason || '').trim();
-          const needsReview = Number(params.data?.category_confidence ?? 1) < 0.7 || reason.toLowerCase().includes('needs review');
-          const reasonLine = reason ? `<div class="category-reason">${escapeHtml(reason.slice(0, 80))}</div>` : '';
-          const reviewChip = needsReview ? '<span class="review-chip">Needs review</span>' : '';
-          return `<div class="category-cell"><div>${escapeHtml(category)}</div>${reasonLine}${reviewChip}</div>`;
-        },
-      },
-      {
-        headerName: 'Amount',
-        field: 'amount',
-        minWidth: 120,
-        valueFormatter: (params) => `${params.value >= 0 ? '+' : '-'}${formatMoney(Math.abs(Number(params.value) || 0))}`,
-        cellStyle: (params) => ({ color: Number(params.value) >= 0 ? '#0d7a5f' : '#1c2a2a', fontWeight: 800 }),
-      },
-      {
-        headerName: 'Status',
-        field: 'status',
-        minWidth: 140,
-        cellRenderer: (params) => `<span class="status-chip ${badgeClass(params.value)}">${escapeHtml(params.value || 'pending')}</span>`,
-      },
-    ],
-    domLayout: 'normal',
-    suppressCellFocus: true,
-    rowSelection: 'none',
+// ---------- Overview (placeholder) ----------
+function renderOverview() {
+  const title = document.getElementById('page-title');
+  const toolbar = document.getElementById('toolbar');
+  const view = document.getElementById('view');
+  title.textContent = 'Overview';
+  toolbar.innerHTML = '';
+  view.innerHTML = `
+    <div class="receivables">
+      <h2>Overview</h2>
+      <p class="empty-inline">Overview placeholder.</p>
+      <p style="color:var(--muted);">Receivables is the default view.</p>
+    </div>
+  `;
+}
+// ---------- Receivables ----------
+function formatDue(value) {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function statusCellRenderer(params) {
+  const { value: status } = params;
+  return statusChip(status);
+}
+function invoiceIdRenderer(p) {
+  const id = String(p.value ?? '');
+  const short = id.length > 22 ? id.slice(0, 19) + '...' : id;
+  return `<span class="invoice-id-cell" title="${escapeHtml(id)}">${escapeHtml(short)}</span>`;
+}
+const COLUMNS = [
+  { headerName: 'Customer', field: 'customerName', minWidth: 170, sortable: true, flex: 1 },
+  { headerName: 'Invoice', field: 'paypalInvoiceId', minWidth: 150, sortable: true, flex: 1, cellRenderer: invoiceIdRenderer },
+  { headerName: 'Amount', field: 'amountCents', minWidth: 120, type: 'rightAligned',
+    valueFormatter: (p) => formatMoney(p.value), cellClass: 'amt-cell', flex: 1 },
+  { headerName: 'Due', field: 'dueAt', minWidth: 140, valueFormatter: (p) => formatDue(p.value), flex: 1 },
+  { headerName: 'Days late', field: 'daysLate', minWidth: 110, type: 'rightAligned',
+    valueFormatter: (p) => (p.value == null || p.value === 0) ? '—' : String(p.value),
+    cellClass: (p) => (p.value != null && p.value > 0) ? 'days-late' : '', flex: 1 },
+  { headerName: 'Status', field: 'status', minWidth: 170, cellRenderer: statusCellRenderer, flex: 1 },
+  { headerName: 'Next action', field: 'nextAction', minWidth: 140, valueFormatter: () => '—', flex: 1 },
+];
+function initGrid() {
+  gridApi = agGrid.createGrid(document.getElementById('aggrid'), {
+    columnDefs: COLUMNS,
+    rowData: [],
+    rowSelection: 'single',
+    getRowId: (p) => p.data.invoiceId,
+    suppressClickEdit: true,
     animateRows: true,
-    pagination: false,
-  };
-
-  const gridApi = new agGrid.Grid(document.getElementById('ledgerGrid'), gridOptions);
-  gridApi.sizeColumnsToFit();
+  });
+  gridApi.addEventListener('rowClicked', (event) => {
+    if (event.data) {
+      selectedInvoiceId = event.data.invoiceId;
+      openSidePanel(event.data.customerId);
+    }
+  });
 }
-
-function renderPay() {
-  app.innerHTML = `
-    <header class="topbar">
-      <a class="brand" href="#/home"><span>Pana<b>Pay</b></span></a>
-      <a class="icon-btn" href="#/settings" aria-label="Settings">⚙️</a>
-    </header>
-    <nav class="tabs" aria-label="Main navigation">
-      <a href="#/home" data-route="home">🏠 Home</a>
-      <a href="#/ledger" data-route="ledger">📒 Ledger</a>
-      <a class="active" href="#/pay" data-route="pay">💸 Pay supplier</a>
-      <a href="#/assistant" data-route="assistant">🤖 Assistant</a>
-    </nav>
-
-    <section class="grid-2">
-      <div class="form-shell">
-        <h2>Send a payout</h2>
-        <form id="payoutForm" novalidate>
-          <label>Supplier
-            <select id="payoutSupplier" name="supplier" required>
-              <option value="">Loading suppliers…</option>
-            </select>
-          </label>
-          <label>Amount (USD)
-            <input id="payoutAmount" name="amount" type="number" min="0.01" step="0.01" placeholder="250.00" required />
-          </label>
-          <label>Note
-            <textarea id="payoutNote" name="note" rows="3" placeholder="Weekly supply order"></textarea>
-          </label>
-          <button id="submitPayout" type="submit">Review payout</button>
-        </form>
-
-        <section id="payoutConfirmView" class="answers" hidden>
-          <h3>Confirm payout</h3>
-          <div id="payoutConfirmSummary"></div>
-          <div style="display:flex; gap:12px; margin-top:16px;">
-            <button id="cancelPayout" type="button" class="secondary">Cancel</button>
-            <button id="confirmPayout" type="button">Confirm</button>
-          </div>
-        </section>
-
-        <div id="payoutFormNotice" class="status" hidden></div>
-        <section id="payoutResultView" class="answers" hidden>
-          <h3 id="payoutResultTitle">Payment status</h3>
-          <p id="payoutResultMessage"></p>
-          <p id="payoutResultStatus" class="status-chip pending">Status: pending</p>
-        </section>
-      </div>
-
-      <div class="card">
-        <h2>Sandbox guidance</h2>
-        <p>Use a PayPal sandbox Business account for the merchant and a sandbox Personal account for the recipient. This is a PayPal sandbox payment, so no real money is sent.</p>
-        <ul class="list">
-          <li><div class="dot">1</div><div><div class="name">Choose a supplier</div><div class="note">Only active supplier contacts can receive payouts.</div></div></li>
-          <li><div class="dot">2</div><div><div class="name">Review the total</div><div class="note">The confirmation step shows who, how much, and the note.</div></div></li>
-          <li><div class="dot">3</div><div><div class="name">Watch the status</div><div class="note">Status updates every 3 seconds for up to 60 seconds.</div></div></li>
-        </ul>
-      </div>
-    </section>
-  `;
-
-  const form = document.getElementById('payoutForm');
-  const supplierSelect = document.getElementById('payoutSupplier');
-  const amountInput = document.getElementById('payoutAmount');
-  const noteInput = document.getElementById('payoutNote');
-  const confirmView = document.getElementById('payoutConfirmView');
-  const confirmSummary = document.getElementById('payoutConfirmSummary');
-  const confirmButton = document.getElementById('confirmPayout');
-  const cancelButton = document.getElementById('cancelPayout');
-  const formNotice = document.getElementById('payoutFormNotice');
-  const resultView = document.getElementById('payoutResultView');
-  const resultMessage = document.getElementById('payoutResultMessage');
-  const resultStatus = document.getElementById('payoutResultStatus');
-
-  const state = {
-    suppliers: [],
-    draft: null,
-    requestInFlight: false,
-  };
-
-  const setNotice = (messages, kind = 'error') => {
-    const list = Array.isArray(messages) ? messages : [messages];
-    const content = list.filter(Boolean).map((message) => `<li>${escapeHtml(String(message))}</li>`).join('');
-    formNotice.hidden = false;
-    formNotice.innerHTML = content ? `<ul>${content}</ul>` : '';
-    formNotice.classList.remove('pending', 'success');
-    if (kind === 'success') {
-      formNotice.classList.add('success');
+function syncGrid(invoices) {
+  const byId = new Map(invoices.map((inv) => [Number(inv.invoiceId), inv]));
+  const selectedId = gridApi.getSelectedRows()[0]?.invoiceId;
+  gridApi.forEachNode((node) => {
+    const id = Number(node.id);
+    const newData = byId.get(id);
+    if (newData && JSON.stringify(node.data) !== JSON.stringify(newData)) {
+      node.setData(newData);
     }
-  };
-
-  const convertDollarsToCents = (value) => {
-    const raw = String(value ?? '').trim();
-    if (!raw) return null;
-    if (!/^\d+(?:\.\d{1,2})?$/.test(raw)) return null;
-    const [whole, fraction = ''] = raw.split('.');
-    const wholeCents = Number.parseInt(whole, 10) * 100;
-    const fractionCents = Number.parseInt((fraction + '00').slice(0, 2), 10);
-    const total = wholeCents + fractionCents;
-    return total > 0 ? total : null;
-  };
-
-  const showForm = () => {
-    confirmView.hidden = true;
-    resultView.hidden = true;
-    form.hidden = false;
-    formNotice.hidden = true;
-  };
-
-  const showConfirmation = (draft) => {
-    form.hidden = true;
-    formNotice.hidden = true;
-    confirmView.hidden = false;
-    resultView.hidden = true;
-    confirmSummary.innerHTML = `
-      <p><strong>Supplier:</strong> ${escapeHtml(draft.supplierName)}</p>
-      <p><strong>Amount:</strong> ${escapeHtml(formatMoney(draft.amountCents))}</p>
-      <p><strong>Note:</strong> ${escapeHtml(draft.note || 'No note supplied')}</p>
-      <p><em>This is a PayPal sandbox payment. No real money will be sent.</em></p>
-    `;
-  };
-
-  const showResult = (title, message, status = 'pending') => {
-    form.hidden = true;
-    confirmView.hidden = true;
-    resultView.hidden = false;
-    const titleNode = document.getElementById('payoutResultTitle');
-    titleNode.textContent = title;
-    resultMessage.innerHTML = message;
-    resultStatus.textContent = `Status: ${status}`;
-    resultStatus.className = `status-chip ${badgeClass(status)}`;
-  };
-
-  const collectErrorMessages = (payload) => {
-    if (!payload) return ['The payout could not be submitted right now.'];
-    if (Array.isArray(payload.errors)) return payload.errors.filter(Boolean);
-    if (Array.isArray(payload.error)) return payload.error.filter(Boolean);
-    if (typeof payload.error === 'string' && payload.error.trim()) return [payload.error];
-    if (typeof payload.message === 'string' && payload.message.trim()) return [payload.message];
-    return ['The payout could not be submitted right now.'];
-  };
-
-  async function fetchSuppliers() {
-    try {
-      const response = await fetch('/api/parties?type=supplier');
-      const data = await response.json();
-      const suppliers = Array.isArray(data?.parties) ? data.parties : [];
-      state.suppliers = suppliers;
-      supplierSelect.innerHTML = '<option value="">Select a supplier</option>' + suppliers.map((supplier) => `<option value="${escapeHtml(String(supplier.id))}">${escapeHtml(String(supplier.name || 'Supplier'))}</option>`).join('');
-      if (!suppliers.length) {
-        supplierSelect.innerHTML = '<option value="">No suppliers available</option>';
-      }
-    } catch (error) {
-      supplierSelect.innerHTML = '<option value="">Unable to load suppliers</option>';
-      setNotice('We could not load suppliers right now. Please refresh and try again.');
-    }
+  });
+  const adds = invoices.filter((inv) => !gridApi.getRowNode(Number(inv.invoiceId)));
+  if (adds.length) gridApi.applyTransaction({ add: adds });
+  const removes = [];
+  gridApi.forEachNode((node) => { if (!byId.has(Number(node.id))) removes.push(node); });
+  if (removes.length) gridApi.applyTransaction({ remove: removes });
+  if (selectedId) {
+    const node = gridApi.getRowNode(selectedId);
+    if (node) node.setSelected(true);
   }
-
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const supplierId = supplierSelect.value;
-    const amountCents = convertDollarsToCents(amountInput.value);
-    const note = noteInput.value.trim();
-
-    if (!supplierId) {
-      setNotice('Please choose a supplier before continuing.');
-      return;
-    }
-
-    if (!Number.isInteger(amountCents) || amountCents <= 0) {
-      setNotice('Enter an amount greater than $0.00 before continuing.');
-      return;
-    }
-
-    const supplier = state.suppliers.find((item) => String(item.id) === String(supplierId));
-    state.draft = {
-      supplierId,
-      supplierName: supplier?.name || 'Supplier',
-      amountCents,
-      note,
-    };
-
-    formNotice.hidden = true;
-    showConfirmation(state.draft);
-  });
-
-  cancelButton.addEventListener('click', () => {
-    state.draft = null;
-    showForm();
-  });
-
-  confirmButton.addEventListener('click', async () => {
-    if (!state.draft || state.requestInFlight) return;
-
-    state.requestInFlight = true;
-    confirmButton.disabled = true;
-    cancelButton.disabled = true;
-    resultStatus.textContent = 'Status: sending';
-    resultStatus.className = 'status-chip pending';
-
-    try {
-      const response = await fetch('/api/payouts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          partyId: String(state.draft.supplierId),
-          amountCents: Number(state.draft.amountCents),
-          note: state.draft.note,
-        }),
-      });
-
-      const payload = await response.json();
-      if (!response.ok) {
-        const messages = collectErrorMessages(payload);
-        formNotice.hidden = false;
-        formNotice.innerHTML = `<ul>${messages.map((message) => `<li>${escapeHtml(message)}</li>`).join('')}</ul>`;
-        form.hidden = false;
-        confirmView.hidden = true;
-        resultView.hidden = true;
-        confirmButton.disabled = false;
-        cancelButton.disabled = false;
-        state.requestInFlight = false;
-        return;
-      }
-
-      const payout = payload?.payout || {};
-      const payoutId = payout.id || null;
-      const finalStatus = String(payout.status || 'pending').toLowerCase();
-      showResult('Payment submitted', `A payout is on its way to <strong>${escapeHtml(String(state.draft.supplierName))}</strong> for <strong>${escapeHtml(formatMoney(Number(state.draft.amountCents)))}</strong>. This is a PayPal sandbox payment.`, finalStatus);
-
-      if (!payoutId) {
-        state.requestInFlight = false;
-        confirmButton.disabled = false;
-        cancelButton.disabled = false;
-        return;
-      }
-
-      const startedAt = Date.now();
-      const deadline = startedAt + 60000;
-      let currentStatus = finalStatus;
-
-      while (Date.now() < deadline) {
-        try {
-          const statusResponse = await fetch(`/api/payouts/${encodeURIComponent(payoutId)}`);
-          const statusPayload = statusResponse.ok ? await statusResponse.json() : null;
-          currentStatus = String(statusPayload?.payout?.status || currentStatus || 'pending').toLowerCase();
-          resultStatus.textContent = `Status: ${currentStatus}`;
-          resultStatus.className = `status-chip ${badgeClass(currentStatus)}`;
-          if (currentStatus === 'completed' || currentStatus === 'failed') {
-            break;
-          }
-        } catch (error) {
-          // Ignore transient polling errors and keep retrying.
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-      }
-
-      resultStatus.textContent = `Status: ${currentStatus}`;
-      resultStatus.className = `status-chip ${badgeClass(currentStatus)}`;
-      state.requestInFlight = false;
-      confirmButton.disabled = false;
-      cancelButton.disabled = false;
-    } catch (error) {
-      state.requestInFlight = false;
-      confirmButton.disabled = false;
-      cancelButton.disabled = false;
-      formNotice.hidden = false;
-      formNotice.innerHTML = `<ul><li>${escapeHtml(error?.message || 'The payout could not be submitted right now.')}</li></ul>`;
-      form.hidden = false;
-      confirmView.hidden = true;
-      resultView.hidden = true;
-    }
-  });
-
-  fetchSuppliers();
-  showForm();
 }
-
-function renderAssistant() {
-  app.innerHTML = `
-    ${renderShell()}
-    <section class="assistant-layout">
-      <div class="card chat-card">
-        <div class="assistant-header">
-          <div>
-            <h2>Support assistant</h2>
-            <p>Ask about recent payments, payouts, or your forecast.</p>
-          </div>
-          <a class="btn small" href="#/escalations">Escalation queue</a>
-        </div>
-        <div class="escalation-banner" id="assistantEscalationBanner" hidden>
-          <strong>Escalated</strong>
-          <span id="assistantEscalationReason">This issue has been handed to a human.</span>
-        </div>
-        <div class="suggestions" id="suggestionChips">
-          <button type="button" class="suggestion-chip">Where is my recent payment?</button>
-          <button type="button" class="suggestion-chip">Did the supplier payout go through?</button>
-          <button type="button" class="suggestion-chip">How much can I spend this week?</button>
-        </div>
-        <div id="assistantChat" class="assistant-chat" aria-live="polite"></div>
-        <form id="assistantForm" class="assistant-form">
-          <input id="assistantInput" type="text" placeholder="Ask a question about your ledger or payouts" aria-label="Ask the support assistant" />
-          <button type="submit">Send</button>
-        </form>
+function renderGridMarkup() {
+  const view = document.getElementById('view');
+  view.innerHTML = `
+    <div class="receivables">
+      <div id="grid-loading" class="loading-state" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div><p>Loading invoices…</p>
       </div>
-      <aside class="card assistant-side">
-        <h3>Recent data</h3>
-        <ul class="list">
-          <li><div class="dot">📌</div><div><div class="name">Live ledger</div><div class="note">Uses the merchant ledger and payout rows.</div></div></li>
-          <li><div class="dot">🧠</div><div><div class="name">AI answers</div><div class="note">Only from tool results or a human escalation.</div></div></li>
-          <li><div class="dot">🚨</div><div><div class="name">Escalations</div><div class="note">Triggered by refund, fraud, amount over $500, or repeated unresolved issues.</div></div></li>
-        </ul>
-      </aside>
-    </section>
+      <div id="grid-empty" class="empty-state" style="display:none">
+        <div style="font-size:1.1rem; font-weight:800;">No invoices yet</div>
+        <p style="color:var(--muted);">Create your first invoice to see receivables here.</p>
+      </div>
+      <div id="grid-error" style="display:none; background:rgba(179,50,43,0.09); border:1px solid rgba(179,50,43,0.22); color:var(--danger); padding:14px 16px; border-radius:12px; margin-bottom:12px; font-size:0.9rem;">
+        <div id="grid-error-msg"></div>
+        <button type="button" id="btn-retry" class="btn secondary" style="width:auto; margin-top:10px;">Retry</button>
+      </div>
+      <div id="grid-wrap" class="grid-wrap" style="display:none"><div id="aggrid" class="ag-theme-quartz" style="width:100%;"></div></div>
+    </div>
   `;
-
-  const chat = document.getElementById('assistantChat');
-  const form = document.getElementById('assistantForm');
-  const input = document.getElementById('assistantInput');
-  const banner = document.getElementById('assistantEscalationBanner');
-  const bannerReason = document.getElementById('assistantEscalationReason');
-
-  const threadState = { id: null };
-
-  const appendBubble = (role, content) => {
-    const row = document.createElement('div');
-    row.className = `chat-bubble ${role}`;
-    row.textContent = content;
-    chat.appendChild(row);
-    chat.scrollTop = chat.scrollHeight;
-  };
-
-  appendBubble('assistant', 'I can check the merchant ledger, recent payouts, and the forecast.');
-
-  document.querySelectorAll('.suggestion-chip').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      input.value = chip.textContent.trim();
-      input.focus();
-    });
-  });
-
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const message = input.value.trim();
-    if (!message) return;
-
-    appendBubble('user', message);
-    input.value = '';
-
-    const response = await fetch('/api/assistant', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ threadId: threadState.id, message }),
-    });
-
-    const data = await response.json();
-    if (!response.ok) {
-      appendBubble('assistant', data.error || 'I could not answer that request.');
-      return;
-    }
-
-    threadState.id = data.threadId || threadState.id;
-    if (data.escalated) {
-      banner.hidden = false;
-      bannerReason.textContent = `${data.escalation?.severity || 'medium'}: ${data.escalation?.reason || 'Escalated to a human.'}`;
-    } else {
-      banner.hidden = true;
-    }
-
-    appendBubble('assistant', data.reply || 'I do not have enough data yet.');
-  });
+  document.getElementById('btn-retry')?.addEventListener('click', loadReceivables);
 }
-
-function renderEscalations() {
-  app.innerHTML = `${renderShell()}<section class="card"><h2>Escalation queue</h2><div id="escalationList" class="stack-list"></div></section>`;
-
-  fetch('/api/escalations')
-    .then((response) => response.json())
-    .then((data) => {
-      const list = document.getElementById('escalationList');
-      const escalations = Array.isArray(data.escalations) ? data.escalations : [];
-
-      if (!escalations.length) {
-        list.innerHTML = '<p class="empty-inline">No escalated threads right now.</p>';
-        return;
-      }
-
-      list.innerHTML = escalations.map((item) => `
-        <div class="escalation-item">
-          <div class="escalation-topline">
-            <strong>${escapeHtml(String(item.id || 'Thread'))}</strong>
-            <span class="status-chip ${badgeClass(item.severity || 'pending')}">${escapeHtml(String(item.severity || 'medium'))}</span>
-          </div>
-          <p>${escapeHtml(String(item.escalation_reason || 'Escalated for review.'))}</p>
-          <small>${escapeHtml(new Date(item.created_at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }))}</small>
-        </div>
-      `).join('');
-    })
-    .catch(() => {
-      document.getElementById('escalationList').innerHTML = '<p class="empty-inline">Unable to load escalations right now.</p>';
-    });
-}
-
-function renderSettings() {
-  const summary = state.summary || { weekly_limit: 0 };
-  app.innerHTML = `${renderShell()}<section class="card stub"><h2>Settings</h2><p>Weekly spending limit: ${escapeHtml(formatMoney(summary.weekly_limit || 0))}.</p></section>`;
-}
-
-const ROUTES = {
-  home: renderHome,
-  ledger: renderLedger,
-  pay: renderPay,
-  assistant: renderAssistant,
-  escalations: renderEscalations,
-  settings: renderSettings,
-};
-
-function renderCurrentRoute() {
-  const route = location.hash.replace(/^#\//, '') || 'home';
-  const renderer = ROUTES[route] || renderHome;
-  renderer();
-
-  const tabs = document.querySelectorAll('.tabs a');
-  tabs.forEach((tab) => {
-    tab.classList.toggle('active', tab.dataset.route === route);
-  });
-
-  window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
-}
-
-async function fetchDashboardData() {
-  const [summaryRes, ledgerRes] = await Promise.all([
-    fetch('/api/summary'),
-    fetch('/api/ledger'),
-  ]);
-
-  if (!summaryRes.ok || !ledgerRes.ok) {
-    throw new Error('Unable to load the dashboard data.');
+async function loadReceivables() {
+  const loading = document.getElementById('grid-loading');
+  const error = document.getElementById('grid-error');
+  const wrap = document.getElementById('grid-wrap');
+  const empty = document.getElementById('grid-empty');
+  const isInitial = initialLoad;
+  initialLoad = false;
+  if (isInitial) {
+    loading.style.display = 'grid';
+    error.style.display = 'none';
+    wrap.style.display = 'none';
+    empty.style.display = 'none';
   }
-
-  const ledger = await ledgerRes.json();
-
-  state.summary = await summaryRes.json();
-  state.ledger = Array.isArray(ledger) ? ledger : [];
-}
-
-async function initApp() {
-  state.loading = true;
-  renderLoading();
-
   try {
-    await fetchDashboardData();
-  } catch (error) {
-    state.summary = { weekly_limit: 0, spent_this_week: 0, safe_to_spend: 0, percent_used: 0 };
-    state.ledger = [];
-  } finally {
-    state.loading = false;
-    renderCurrentRoute();
+    const data = await getJson('/api/receivables');
+    const invoices = Array.isArray(data.invoices) ? data.invoices : [];
+    if (!gridApi) { initGrid(); gridApi.setGridOption('rowData', invoices); }
+    else syncGrid(invoices);
+    loading.style.display = 'none';
+    if (invoices.length === 0) empty.style.display = 'grid';
+    else wrap.style.display = 'block';
+  } catch (err) {
+    loading.style.display = 'none';
+    error.style.display = 'block';
+    document.getElementById('grid-error-msg').textContent = 'Unable to load invoices.';
+    document.getElementById('grid-error-msg').innerHTML = 'Unable to load invoices. ' + escapeHtml(err.message);
+    wrap.style.display = 'none';
+  }
+}
+function startPolling() {
+  stopPolling();
+  if (currentRoute !== 'receivables') return;
+  if (document.visibilityState !== 'visible') return;
+  pollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible' && currentRoute === 'receivables') loadReceivables();
+  }, 5000);
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+function renderReceivables() {
+  const title = document.getElementById('page-title');
+  const toolbar = document.getElementById('toolbar');
+  title.textContent = 'Receivables';
+  toolbar.innerHTML = `<button type="button" class="btn-new" id="btn-new-invoice" aria-label="Create a new invoice">+ New invoice</button>`;
+  gridApi = null;
+  initialLoad = true;
+  renderGridMarkup();
+  document.getElementById('btn-new-invoice').addEventListener('click', openNewInvoiceForm);
+  startPolling();
+  loadReceivables();
+}
+
+// ---------- Side panel ----------
+async function openSidePanel(customerId) {
+  const root = document.getElementById('panel-root');
+  root.innerHTML = `
+    <div class="panel" id="side-panel" aria-label="Customer details" role="region" aria-modal="true">
+      <div class="panel-header-card">
+        <div class="header-top">
+          <div class="header-left">
+            <h2 class="customer-name" id="panel-customer-name">Loading…</h2>
+            <span class="demo-tag" id="panel-demo-tag">Demo data</span>
+          </div>
+          <button type="button" class="panel-close" id="btn-close-panel" aria-label="Close panel">${icon('x')}</button>
+        </div>
+        <div class="figures">
+          <div class="figure"><div class="figure-value" id="panel-outstanding">—</div><div class="figure-label">Outstanding</div></div>
+          <div class="figure"><div class="figure-value" id="panel-paid-late">—</div><div class="figure-label">Paid late</div></div>
+          <div class="figure"><div class="figure-value" id="panel-promises-kept">—</div><div class="figure-label">Promises kept</div></div>
+        </div>
+      </div>
+      <div class="panel-body" id="panel-body">
+        <div class="loading-state"><div class="spinner" aria-hidden="true"></div><p>Loading customer…</p></div>
+      </div>
+    </div>
+  `;
+  document.getElementById('btn-close-panel').addEventListener('click', closeSidePanel);
+  try {
+    const data = await getJson(`/api/customers/${customerId}`);
+    renderSidePanel(data);
+    document.getElementById('panel-demo-tag').style.display = data.customer?.source === 'seeded' ? 'inline-block' : 'none';
+    window.addEventListener('resize', positionPanel);
+  } catch (err) {
+    document.getElementById('panel-body').innerHTML = `<p style="color:var(--danger); padding:16px;">Unable to load customer: ${escapeHtml(err.message)}</p>`;
+  }
+}
+function positionPanel() {
+  const panel = document.getElementById('side-panel');
+  if (!panel) return;
+  const topbar = document.querySelector('.topbar');
+  const top = topbar ? Math.round(topbar.getBoundingClientRect().bottom) : 0;
+  const desktop = window.innerWidth >= 900;
+  const gridWrap = document.getElementById('grid-wrap');
+  if (desktop) {
+    panel.style.position = 'fixed';
+    panel.style.top = top + 'px';
+    panel.style.right = '0';
+    panel.style.width = '420px';
+    panel.style.height = Math.max(0, window.innerHeight - top) + 'px';
+    if (gridWrap) gridWrap.style.marginRight = '440px';
+  } else {
+    panel.style.position = 'fixed';
+    panel.style.top = '0';
+    panel.style.right = '0';
+    panel.style.width = '100vw';
+    panel.style.height = '100vh';
+    panel.style.left = 'auto';
+    if (gridWrap) gridWrap.style.marginRight = '';
+  }
+  gridApi?.sizeColumnsToFit();
+}
+function closeSidePanel() {
+  document.getElementById('panel-root').innerHTML = '';
+  gridApi?.deselectAll();
+  selectedInvoiceId = null;
+  window.removeEventListener('resize', positionPanel);
+  const gridWrap = document.getElementById('grid-wrap');
+  if (gridWrap) gridWrap.style.marginRight = '';
+  gridApi?.sizeColumnsToFit();
+}
+function renderSidePanel(data) {
+  const { customer, invoices = [], notes = [], promises = [], profile } = data || {};
+  const body = document.getElementById('panel-body');
+  const enough = Boolean(profile?.enoughHistory);
+  const evidence = Array.isArray(profile?.evidence) ? profile.evidence : [];
+  document.getElementById('panel-customer-name').textContent = customer?.name ?? 'Customer';
+  document.getElementById('panel-demo-tag').style.display = customer?.source === 'seeded' ? 'inline-block' : 'none';
+  document.getElementById('panel-outstanding').textContent = formatMoney(profile?.outstandingCents ?? 0);
+  document.getElementById('panel-paid-late').textContent = String(profile?.paidLateCount ?? 0);
+  document.getElementById('panel-promises-kept').textContent = `${profile?.promisesKept ?? 0} of ${profile?.promisesMade ?? 0}`;
+
+  const whatWeKnow = enough
+    ? `<ul class="evidence-list">${evidence.map((e) => `<li>${icon('dot')}${escapeHtml(e)}</li>`).join('')}</ul>
+       <p class="sample-footnote">Sample size: ${profile?.invoiceCount ?? 0} invoice${profile?.invoiceCount === 1 ? '' : 's'}.</p>`
+    : '<p class="empty-inline">Not enough history yet</p>';
+
+  const invList = invoices.map((inv) => {
+    const info = STATUS_ICONS[String(inv.status).toLowerCase()] || { label: String(inv.status), icon: 'circle', color: '#5e6f6a' };
+    const days = inv.daysLate;
+    return `<div class="invoice-row" data-id="${inv.id}">
+      <div class="inv-id" title="${escapeHtml(inv.paypal_invoice_id || '')}">${escapeHtml(inv.paypal_invoice_id || 'Invoice')}</div>
+      <div class="inv-amount">${formatMoney(inv.amount_cents)}</div>
+      <div class="inv-due">${formatDue(inv.due_at)}</div>
+      <div class="inv-status">${statusChip(inv.status)}</div>
+      <div class="inv-days">${days > 0 ? `${days} days late` : ''}</div>
+    </div>`;
+  }).join('');
+
+  const noteItems = (notes || []).map((n) => `<p style="margin:4px 0; font-size:0.88rem;">${escapeHtml(n.text || n.note || '')}</p>`).join('') || '<p class="empty-inline">No notes.</p>';
+
+  const promiseItems = (promises || []).map((p) => {
+    const confirmed = String(p.status || '').toLowerCase() !== 'unconfirmed';
+    const info = STATUS_ICONS[String(p.status || 'unconfirmed').toLowerCase()] || { label: String(p.status), icon: 'circle', color: '#5e6f6a' };
+    return `<div class="promise-row">
+      <span class="status-chip" style="color:${info.color}; border-color:${tint(info.color, 0.2)}; background:${tint(info.color, 0.08)}">${icon(info.icon)}<span class="txt">${escapeHtml(info.label)}</span></span>
+      <span class="promise-date">${formatDue(p.promised_date)}</span>
+      <span class="promise-confidence">${Math.round(Number(p.confidence ?? 0) * 100)}%</span>
+      <span class="promise-reason">${escapeHtml(p.reason || '')}</span>
+      ${confirmed ? '' : '<span class="needs-confirm">Needs confirmation</span>'}
+    </div>`;
+  }).join('') || '<p class="empty-inline">No promises.</p>';
+
+  body.innerHTML = `
+    <div class="panel-section"><h3>What we know</h3><div class="evidence-list">${whatWeKnow}</div></div>
+    <div class="panel-section"><h3>Invoices (${invoices.length})</h3><div class="invoice-list">${invList || '<p class="empty-inline">No invoices.</p>'}</div></div>
+    <div class="panel-section"><h3>Notes and promises</h3><div class="notes-list">${noteItems}${promiseItems}</div></div>
+    <div class="panel-section"><h3>Next action</h3><p style="margin:0; color:var(--muted); font-size:0.88rem;">Next action rules coming soon.</p></div>
+  `;
+}
+
+// ---------- New invoice form ----------
+async function openNewInvoiceForm() {
+  let data;
+  try { data = await getJson('/api/customers'); } catch (err) {
+    alert('Unable to load customers: ' + err.message);
+    return;
+  }
+  const invoiceable = Array.isArray(data.customers) ? data.customers.filter((c) => c.canInvoice) : [];
+  const options = invoiceable.map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('') || '<option value="">No invoicable customers</option>';
+  const modal = document.getElementById('modal-root');
+  modal.innerHTML = `
+    <div class="modal" id="invoice-modal" aria-label="New invoice" role="dialog" aria-modal="true">
+      <div class="panel" style="position:relative; height:auto; max-height:90vh; overflow-y:auto; border:none; box-shadow:var(--shadow);">
+        <div class="head">
+          <h2>New invoice</h2>
+          <button type="button" class="close" id="btn-close-form" aria-label="Close">${icon('x')}</button>
+        </div>
+        <div class="body" style="padding:24px; overflow-y:auto; max-height:65vh;">
+          <form id="invoice-form">
+            <div class="form-row">
+              <label for="form-customer">Customer</label>
+              <select id="form-customer" required>${options}</select>
+            </div>
+            <div class="form-row">
+              <label for="form-amount">Amount (USD)</label>
+              <input type="number" id="form-amount" step="0.01" min="0" placeholder="0.00" required>
+            </div>
+            <div class="form-row">
+              <label for="form-due">Due date</label>
+              <input type="date" id="form-due" required>
+            </div>
+            <div class="form-row">
+              <label for="form-desc">Description</label>
+              <textarea id="form-desc" rows="3" placeholder="e.g. Fabric order"></textarea>
+            </div>
+            <div id="form-error" class="error-box" style="display:none"></div>
+            <div style="display:flex; gap:10px; margin-top:18px;">
+              <button type="button" id="btn-cancel-form" class="btn secondary" style="width:auto;">Cancel</button>
+              <button type="submit" id="btn-submit-form" class="btn-new" style="width:auto;">Create invoice</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById('btn-close-form').addEventListener('click', closeNewInvoiceForm);
+  document.getElementById('btn-cancel-form').addEventListener('click', closeNewInvoiceForm);
+  document.getElementById('invoice-form').addEventListener('submit', handleNewInvoiceSubmit);
+  document.getElementById('form-due').value = new Date().toISOString().slice(0, 10);
+}
+function closeNewInvoiceForm() {
+  document.getElementById('modal-root').innerHTML = '';
+}
+async function handleNewInvoiceSubmit(e) {
+  e.preventDefault();
+  const amountCents = toCents(document.getElementById('form-amount').value);
+  const body = {
+    customerId: Number(document.getElementById('form-customer').value),
+    amountCents,
+    dueDate: document.getElementById('form-due').value,
+    description: document.getElementById('form-desc').value.trim(),
+  };
+  const errorEl = document.getElementById('form-error');
+  const submitBtn = document.getElementById('btn-submit-form');
+  errorEl.style.display = 'none';
+  errorEl.textContent = '';
+  submitBtn.disabled = true;
+  try {
+    const data = await postJson('/api/invoices', body);
+    const payerLink = data.payer_link;
+    document.getElementById('invoice-form').innerHTML = `
+      <div class="success-box">Invoice created successfully.</div>
+      ${payerLink ? `<a href="${escapeHtml(payerLink)}" target="_blank" rel="noopener" class="payer-link-btn">Open payer link</a>` : ''}
+      <p style="margin-top:10px; font-size:0.85rem; color:var(--muted);">Refreshing the grid…</p>
+    `;
+    setTimeout(() => { closeNewInvoiceForm(); loadReceivables(); }, 1200);
+  } catch (err) {
+    errorEl.style.display = 'block';
+    errorEl.innerHTML = 'Unable to create invoice. ' + escapeHtml(err.message);
+    submitBtn.disabled = false;
   }
 }
 
-window.addEventListener('hashchange', renderCurrentRoute);
-initApp();
+// ---------- Keyboard + nav ----------
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeSidePanel(); closeNewInvoiceForm(); }
+});
+window.addEventListener('load', renderApp);
+window.addEventListener('hashchange', renderApp);
+window.addEventListener('resize', positionPanel);
+

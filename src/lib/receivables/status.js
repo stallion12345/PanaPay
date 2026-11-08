@@ -92,6 +92,42 @@ export function getStatusReasonLabel(result) {
   return 'No due date';
 }
 
+function dayDifferenceBetweenKeys(startKey, endKey) {
+  const [startYear, startMonth, startDay] = startKey.split('-').map(Number);
+  const [endYear, endMonth, endDay] = endKey.split('-').map(Number);
+  const startMs = Date.UTC(startYear, startMonth - 1, startDay);
+  const endMs = Date.UTC(endYear, endMonth - 1, endDay);
+  return Math.max(0, Math.round((endMs - startMs) / 86400000));
+}
+
+// How many calendar days (America/Chicago) the invoice is late.
+// - Paid in full after the due date: days from due date to paid date.
+// - Unpaid or partially paid and past due: days from due date to now.
+// - Everything else: 0.
+export function computeDaysLate(invoice, now) {
+  const dueKey = toChicagoDateKey(invoice?.due_at);
+  if (!dueKey) {
+    return 0;
+  }
+
+  const todayKey = toChicagoDateKey(now);
+  const paidKey = toChicagoDateKey(invoice?.paid_at);
+
+  const amountCents = Number(invoice?.amount_cents ?? 0);
+  const paidCents = Number(invoice?.paid_cents ?? 0);
+  const fullyPaid = amountCents > 0 && paidCents >= amountCents;
+
+  if (fullyPaid && paidKey && paidKey > dueKey) {
+    return dayDifferenceBetweenKeys(dueKey, paidKey);
+  }
+
+  if (!fullyPaid && todayKey && dueKey < todayKey) {
+    return dayDifferenceBetweenKeys(dueKey, todayKey);
+  }
+
+  return 0;
+}
+
 export function derive({ invoice = {}, promises = [], now } = {}) {
   const amountCents = Number(invoice.amount_cents ?? 0);
   const paidCents = Number(invoice.paid_cents ?? 0);
