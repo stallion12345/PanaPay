@@ -10,6 +10,8 @@ import { limitAlarm, lowPoint, projectBalance, weeklyBuckets } from './lib/forec
 import { createInvoice, createPayout, extractInvoiceId, getInvoice, sendInvoice, verifyWebhookSignature } from './lib/paypal.js';
 import { derive, toChicagoDateKey, computeDaysLate } from './lib/receivables/status.js';
 import { buildProfile } from './lib/receivables/profile.js';
+import { callModel } from './lib/llm.js';
+import { extractPromise } from './lib/receivables/extract.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
 const port = Number.parseInt(process.env.PORT || '3000', 10);
@@ -1152,6 +1154,98 @@ app.get('/api/customers/:id', (req, res) => {
     promises: allPromises,
     profile,
     nextAction: null,
+  });
+});
+async function defaultExtractionModel({ system, user }) {
+  const result = await callModel({ system, messages: [{ role: 'user', content: user }] });
+  return result.text;
+}
+
+app.post('/api/customers/:id/notes', async (req, res) => {
+  const customerId = Number(req.params.id);
+  const customer = db
+    .prepare('SELECT id FROM customer WHERE id = ? AND merchant_id = ?')
+    .get(customerId, DEFAULT_MERCHANT_ID);
+  if (!customer) {
+    return res.status(404).json({ ok: false, error: 'Customer not found.' });
+  }
+
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+  if (!text || text.length > 1000) {
+    return res.status(400).json({ ok: false, error: 'Note must be between 1 and 1000 characters.' });
+  }
+
+  let invoice;
+  if (req.body?.invoiceId != null) {
+    invoice = db
+      .prepare('SELECT * FROM invoice WHERE id = ? AND customer_id = ? AND merchant_id = ?')
+      .get(Number(req.body.invoiceId), customerId, DEFAULT_MERCHANT_ID);
+    if (!invoice) {
+      return res.status(400).json({ ok: false, error: 'Invoice not found for this customer.' });
+    }
+  } else {
+    invoice = db
+      .prepare(
+        `SELECT * FROM invoice
+         WHERE customer_id = ? AND merchant_id = ? AND paid_cents < amount_cents
+         ORDER BY due_at ASC, id ASC LIMIT 1`,
+      )
+      .get(customerId, DEFAULT_MERCHANT_ID);
+  }
+
+  const nowDate = new Date();
+  const nowIso = nowDate.toISOString();
+  const noteResult = db
+    .prepare('INSERT INTO customer_note (merchant_id, customer_id, invoice_id, text, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(DEFAULT_MERCHANT_ID, customerId, invoice?.id ?? null, text, nowIso);
+  const noteId = Number(noteResult.lastInsertRowid);
+
+  let extractionState = 'no_open_invoice';
+  let promise = null;
+
+  if (invoice && invoice.paid_cents < invoice.amount_cents) {
+    const model = app.locals.extractionModel ?? defaultExtractionModel;
+    const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'America/Chicago' }).format(nowDate);
+    const extraction = await extractPromise({
+      text,
+      todayKey: toChicagoDateKey(nowIso),
+      weekday,
+      model,
+    });
+
+    if (!extraction.ok) {
+      extractionState = 'failed';
+      console.error(`[notes] extraction failed: ${extraction.error}`);
+    } else if (extraction.isPromise && extraction.promisedDate) {
+      const unpaid = invoice.amount_cents - invoice.paid_cents;
+      const promisedCents = extraction.amountCents > 0 ? Math.min(extraction.amountCents, unpaid) : unpaid;
+      const status = extraction.confidence >= 0.7 ? 'open' : 'unconfirmed';
+      const promiseResult = db
+        .prepare(
+          `INSERT INTO promise
+           (merchant_id, customer_id, invoice_id, note_id, reason, promised_date, promised_cents, method, confidence, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          DEFAULT_MERCHANT_ID, customerId, invoice.id, noteId, extraction.reason,
+          extraction.promisedDate, promisedCents, extraction.method, extraction.confidence, status, nowIso,
+        );
+      promise = db.prepare('SELECT * FROM promise WHERE id = ?').get(Number(promiseResult.lastInsertRowid));
+      extractionState = status === 'open' ? 'promise' : 'needs_confirmation';
+    } else {
+      extractionState = 'no_promise';
+    }
+  }
+
+  const note = db.prepare('SELECT * FROM customer_note WHERE id = ?').get(noteId);
+  const freshInvoice = invoice ? db.prepare('SELECT * FROM invoice WHERE id = ?').get(invoice.id) : null;
+
+  res.status(201).json({
+    ok: true,
+    note,
+    promise,
+    extraction: extractionState,
+    invoice: freshInvoice ? buildInvoiceSummary(freshInvoice, nowIso) : null,
   });
 });
 app.use((req, res) => {
