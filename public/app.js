@@ -1,4 +1,4 @@
-const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+﻿const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 }[char]));
 
@@ -575,7 +575,11 @@ function renderSidePanel(data) {
       ${amt}
       <span class="promise-confidence">${Math.round(Number(p.confidence ?? 0) * 100)}%</span>
       <span class="promise-reason">${escapeHtml(p.reason || '')}</span>
-      ${confirmed ? '' : '<span class="needs-confirm">Needs confirmation</span>'}
+            ${confirmed ? '' : `<span class="needs-confirm">Needs confirmation</span>
+        <span class="promise-actions">
+          <button type="button" class="btn secondary btn-sm" data-promise-action="confirm" data-promise-id="${escapeHtml(p.id)}">Confirm</button>
+          <button type="button" class="btn secondary btn-sm" data-promise-action="reject" data-promise-id="${escapeHtml(p.id)}">Reject</button>
+        </span>`}
     </div>`;
   }).join('') || '<p class="empty-inline">No promises.</p>';
 
@@ -593,6 +597,7 @@ function renderSidePanel(data) {
   `;
   document.getElementById('note-form')?.addEventListener('submit', (e) => handleNoteSubmit(e, Number(customer?.id)));
   wireNextAction();
+  wirePromiseActions(Number(customer?.id));
 }
 
 async function handleNoteSubmit(e, customerId) {
@@ -698,6 +703,23 @@ function wireNextAction() {
       button.disabled = false;
       button.textContent = 'Draft message';
     }
+  });
+}
+
+function wirePromiseActions(customerId) {
+  document.querySelectorAll('[data-promise-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const group = btn.closest('.promise-actions');
+      group.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      try {
+        await postJson(`/api/promises/${encodeURIComponent(btn.dataset.promiseId)}/${btn.dataset.promiseAction}`, {});
+        await openSidePanel(customerId);
+        loadReceivables();
+      } catch (err) {
+        group.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+        group.insertAdjacentText('beforeend', ' ' + err.message);
+      }
+    });
   });
 }
 
