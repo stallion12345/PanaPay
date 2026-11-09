@@ -16,7 +16,7 @@
     "fintech",
     "express"
   ],
-  "author": "",
+  "author": "chukwuemeka chukwuma",
   "license": "MIT",
   "engines": { "node": ">=24" },
   "dependencies": {
