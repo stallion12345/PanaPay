@@ -12,6 +12,8 @@ import { derive, toChicagoDateKey, computeDaysLate } from './lib/receivables/sta
 import { buildProfile } from './lib/receivables/profile.js';
 import { callModel } from './lib/llm.js';
 import { extractPromise } from './lib/receivables/extract.js';
+import { computeNextAction, pickPromise } from './lib/receivables/nextAction.js';
+import { buildFacts, draftMessage } from './lib/receivables/draft.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
 const port = Number.parseInt(process.env.PORT || '3000', 10);
@@ -1146,6 +1148,17 @@ app.get('/api/customers/:id', (req, res) => {
     now,
   });
 
+    const invoicesWithActions = invoicesWithStatus.map((inv) => ({
+    ...inv,
+    nextAction: computeNextAction({
+      status: inv.status,
+      daysLate: inv.daysLate,
+      owedCents: inv.amount_cents - inv.paid_cents,
+      promise: pickPromise(allPromises.filter((p) => p.invoice_id === inv.id)),
+      label: profile.label,
+    }),
+  }));
+
   res.json({
     ok: true,
     customer,
@@ -1248,6 +1261,50 @@ app.post('/api/customers/:id/notes', async (req, res) => {
     invoice: freshInvoice ? buildInvoiceSummary(freshInvoice, nowIso) : null,
   });
 });
+app.post('/api/invoices/:id/draft', async (req, res) => {
+  const invoice = db
+    .prepare('SELECT * FROM invoice WHERE id = ? AND merchant_id = ?')
+    .get(Number(req.params.id), DEFAULT_MERCHANT_ID);
+  if (!invoice) {
+    return res.status(404).json({ ok: false, error: 'Invoice not found.' });
+  }
+
+  const customer = db.prepare('SELECT * FROM customer WHERE id = ?').get(invoice.customer_id);
+  const merchant = db.prepare('SELECT name FROM merchant WHERE id = ?').get(DEFAULT_MERCHANT_ID);
+  const nowIso = new Date().toISOString();
+  const allPromises = db
+    .prepare('SELECT * FROM promise WHERE customer_id = ? AND merchant_id = ?')
+    .all(invoice.customer_id, DEFAULT_MERCHANT_ID);
+  const invoicePromises = allPromises.filter((p) => p.invoice_id === invoice.id);
+  const customerInvoices = db
+    .prepare('SELECT * FROM invoice WHERE customer_id = ? AND merchant_id = ?')
+    .all(invoice.customer_id, DEFAULT_MERCHANT_ID);
+
+  const derived = derive({ invoice, promises: invoicePromises, now: nowIso });
+  const profile = buildProfile({ invoices: customerInvoices, promises: allPromises, payments: [], now: nowIso });
+  const daysLate = computeDaysLate(invoice, nowIso);
+  const owedCents = invoice.amount_cents - invoice.paid_cents;
+  const promise = pickPromise(invoicePromises);
+  const action = computeNextAction({ status: derived.status, daysLate, owedCents, promise, label: profile.label });
+
+  if (!action.draftable) {
+    return res.status(400).json({ ok: false, error: 'No message is needed for this invoice.' });
+  }
+
+  const facts = buildFacts({
+    customerName: customer?.name,
+    businessName: merchant?.name,
+    owedCents,
+    dueDate: String(invoice.due_at ?? '').slice(0, 10),
+    daysLate,
+    promisedDate: promise?.promised_date ?? null,
+    action,
+  });
+  const result = await draftMessage({ facts, model: app.locals.draftModel ?? defaultExtractionModel });
+
+  res.json({ ok: true, action, draft: result.text, source: result.source });
+});
+
 app.use((req, res) => {
   res.status(404).json({ ok: false, error: 'Not found' });
 });

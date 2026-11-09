@@ -564,7 +564,7 @@ function renderSidePanel(data) {
   <button type="submit" id="btn-add-note" class="btn secondary">Add note</button>
 </form>
 <div id="note-result"></div>`;
-
+  const focus = pickFocusInvoice(invoices);
   body.innerHTML = `
     <div class="panel-section"><h3>What we know</h3><div class="evidence-list">${whatWeKnow}</div></div>
     <div class="panel-section"><h3>Invoices (${invoices.length})</h3><div class="invoice-list">${invList || '<p class="empty-inline">No invoices.</p>'}</div></div>
@@ -615,6 +615,69 @@ async function handleNoteSubmit(e, customerId) {
     btn.disabled = false;
     btn.textContent = 'Add note';
   }
+}
+// ---------- Next action card ----------
+function pickFocusInvoice(invoices) {
+  const selected = invoices.find((inv) => String(inv.id) === String(selectedInvoiceId));
+  if (selected) return selected;
+  return invoices.find((inv) => inv.nextAction && inv.nextAction.key !== 'none') || invoices[0] || null;
+}
+
+function renderNextActionCard(inv) {
+  const action = inv && inv.nextAction;
+  if (!action) {
+    return '<div class="panel-section"><h3>Next action</h3><p class="empty-inline">No open invoice.</p></div>';
+  }
+  const draftButton = action.draftable
+    ? `<button type="button" class="btn secondary" id="btn-draft" data-invoice="${escapeHtml(inv.id)}">Draft message</button>`
+    : '';
+  return `<div class="panel-section">
+    <h3>Next action</h3>
+    <p class="next-title">${escapeHtml(action.title)}</p>
+    <p class="next-reason">${escapeHtml(action.reason)}</p>
+    <p class="next-invoice">For ${escapeHtml(inv.paypal_invoice_id || 'this invoice')}</p>
+    ${draftButton}
+    <div id="draft-area"></div>
+  </div>`;
+}
+
+function wireNextAction() {
+  const button = document.getElementById('btn-draft');
+  if (!button) return;
+  button.addEventListener('click', async () => {
+    const area = document.getElementById('draft-area');
+    button.disabled = true;
+    button.textContent = 'Drafting...';
+    area.textContent = '';
+    try {
+      const data = await postJson(`/api/invoices/${encodeURIComponent(button.dataset.invoice)}/draft`, {});
+      area.innerHTML = `
+        <textarea id="draft-text" class="draft-text" rows="6"></textarea>
+        <div class="draft-actions">
+          <button type="button" class="btn secondary" id="btn-copy-draft">Copy</button>
+          <span class="draft-note" id="draft-note"></span>
+        </div>`;
+      document.getElementById('draft-text').value = data.draft;
+      document.getElementById('draft-note').textContent = data.source === 'ai'
+        ? 'Written by AI from the facts above. Check it before you send it.'
+        : 'Standard wording. The AI was unavailable.';
+      document.getElementById('btn-copy-draft').addEventListener('click', async () => {
+        const textarea = document.getElementById('draft-text');
+        try {
+          await navigator.clipboard.writeText(textarea.value);
+        } catch {
+          textarea.select();
+          document.execCommand('copy');
+        }
+        document.getElementById('draft-note').textContent = 'Copied.';
+      });
+    } catch (err) {
+      area.textContent = err.message;
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Draft message';
+    }
+  });
 }
 
 // ---------- New invoice form ----------
