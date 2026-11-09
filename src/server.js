@@ -1076,6 +1076,40 @@ function buildInvoiceSummary(invoice, now) {
   };
 }
 
+app.post('/api/promises/:id/confirm', (req, res) => {
+  const id = Number(req.params.id);
+  const promise = db
+    .prepare('SELECT * FROM promise WHERE id = ? AND merchant_id = ?')
+    .get(id, DEFAULT_MERCHANT_ID);
+  if (!promise) return res.status(404).json({ ok: false, error: 'Promise not found.' });
+  if (promise.status !== 'unconfirmed') {
+    return res.status(409).json({ ok: false, error: 'Only unconfirmed promises can be confirmed.' });
+  }
+  db.prepare("UPDATE promise SET status = 'open' WHERE id = ? AND merchant_id = ?")
+    .run(id, DEFAULT_MERCHANT_ID);
+  const invoice = db
+    .prepare('SELECT * FROM invoice WHERE id = ? AND merchant_id = ?')
+    .get(promise.invoice_id, DEFAULT_MERCHANT_ID);
+  res.json({
+    ok: true,
+    invoice: invoice ? buildInvoiceSummary(invoice, new Date().toISOString()) : null,
+  });
+});
+
+app.post('/api/promises/:id/reject', (req, res) => {
+  const id = Number(req.params.id);
+  const promise = db
+    .prepare('SELECT * FROM promise WHERE id = ? AND merchant_id = ?')
+    .get(id, DEFAULT_MERCHANT_ID);
+  if (!promise) return res.status(404).json({ ok: false, error: 'Promise not found.' });
+  if (promise.status !== 'unconfirmed') {
+    return res.status(409).json({ ok: false, error: 'Only unconfirmed promises can be rejected.' });
+  }
+  db.prepare("DELETE FROM promise WHERE id = ? AND merchant_id = ? AND status = 'unconfirmed'")
+    .run(id, DEFAULT_MERCHANT_ID);
+  res.json({ ok: true });
+});
+
 app.get('/api/receivables', (_req, res) => {
   const now = new Date().toISOString();
   const invoices = db
