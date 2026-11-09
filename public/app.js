@@ -330,9 +330,17 @@ const COLUMNS = [
   { headerName: 'Amount', field: 'amountCents', minWidth: 90, type: 'rightAligned',
     valueFormatter: (p) => formatMoney(p.value), cellClass: 'amt-cell', flex: 1 },
   { headerName: 'Due', field: 'dueAt', minWidth: 100, valueFormatter: (p) => formatDue(p.value), flex: 1 },
-  { headerName: 'Days late', field: 'daysLate', minWidth: 80, type: 'rightAligned',
-    valueFormatter: (p) => (p.value == null || p.value === 0) ? '—' : String(p.value),
-    cellClass: (p) => (p.value != null && p.value > 0) ? 'days-late' : '', flex: 1 },
+  { headerName: 'Days late', field: 'daysLate', minWidth: 120, type: 'rightAligned',
+  valueFormatter: (p) => {
+    const s = p.data?.status;
+    const d = p.data?.daysLate ?? 0;
+    if (s === 'paid') return 'Paid on time';
+    if (s === 'paid_late') return d > 0 ? `Paid ${d}d late` : 'Paid late';
+    if (d > 0) return d === 1 ? '1 day late' : `${d} days late`;
+    if (s === 'due_today') return 'Due today';
+    return 'Not due yet';
+  },
+},
   { headerName: 'Status', field: 'status', minWidth: 140, cellRenderer: statusCellRenderer, flex: 1 },
 ];
 function initGrid() {
@@ -565,13 +573,14 @@ function renderSidePanel(data) {
 </form>
 <div id="note-result"></div>`;
   const focus = pickFocusInvoice(invoices);
-  body.innerHTML = `
+   body.innerHTML = `
     <div class="panel-section"><h3>What we know</h3><div class="evidence-list">${whatWeKnow}</div></div>
     <div class="panel-section"><h3>Invoices (${invoices.length})</h3><div class="invoice-list">${invList || '<p class="empty-inline">No invoices.</p>'}</div></div>
     <div class="panel-section"><h3>Notes and promises</h3><div class="notes-list">${noteForm}${noteItems}${promiseItems}</div></div>
-    <div class="panel-section"><h3>Next action</h3><p style="margin:0; color:var(--muted); font-size:0.88rem;">Next action rules coming soon.</p></div>
+    ${renderNextActionCard(focus)}
   `;
   document.getElementById('note-form')?.addEventListener('submit', (e) => handleNoteSubmit(e, Number(customer?.id)));
+  wireNextAction();
 }
 
 async function handleNoteSubmit(e, customerId) {
@@ -753,9 +762,11 @@ async function handleNewInvoiceSubmit(e) {
     document.getElementById('invoice-form').innerHTML = `
       <div class="success-box">Invoice created successfully.</div>
       ${payerLink ? `<a href="${escapeHtml(payerLink)}" target="_blank" rel="noopener" class="payer-link-btn">Open payer link</a>` : ''}
-      <p style="margin-top:10px; font-size:0.85rem; color:var(--muted);">Refreshing the grid…</p>
+          <p style="margin-top:10px; font-size:0.85rem; color:var(--muted);">Invoice created. Pay it, then close this window.</p>
+      <button type="button" class="btn secondary" id="btn-invoice-done" style="margin-top:8px;">Done</button>
     `;
-    setTimeout(() => { closeNewInvoiceForm(); loadReceivables(); }, 1200);
+    document.getElementById('btn-invoice-done')?.addEventListener('click', () => { closeNewInvoiceForm(); loadReceivables(); });
+    loadReceivables();
   } catch (err) {
     errorEl.style.display = 'block';
     errorEl.innerHTML = 'Unable to create invoice. ' + escapeHtml(err.message);

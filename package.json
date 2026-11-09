@@ -1,7 +1,7 @@
 {
   "name": "panapay",
   "version": "1.0.0",
-  "description": "PanaPay PayPal sandbox cash-flow dashboard",
+  "description": "PanaPay: know who owes you, what they promised, and whether PayPal confirms they paid",
   "main": "src/server.js",
   "type": "module",
   "scripts": {
@@ -17,7 +17,8 @@
     "express"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
+  "engines": { "node": ">=24" },
   "dependencies": {
     "express": "^5.3.0",
     "zod": "^3.23.8"

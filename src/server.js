@@ -1162,7 +1162,7 @@ app.get('/api/customers/:id', (req, res) => {
   res.json({
     ok: true,
     customer,
-    invoices: invoicesWithStatus,
+    invoices: invoicesWithActions,
     notes,
     promises: allPromises,
     profile,
