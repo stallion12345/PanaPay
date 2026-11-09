@@ -110,12 +110,15 @@ button.secondary { background: #27313a; }
 .ag-row-hover { background: rgba(13,122,95,0.04); }
 
 /* ---------- Grid layout: fill the viewport below the header ---------- */
-.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
 .main > .topbar { flex-shrink: 0; }
-#view { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
-.receivables { flex: 1; min-height: 0; display: flex; flex-direction: column; width: 100%; max-width: 1100px; }
-#grid-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-#aggrid { width: 100%; height: 100%; }
+.content-row { display: flex; flex: 1; min-height: 0; gap: 0; }
+#view { flex: 1 1 0; min-width: 0; overflow: hidden; }
+#panel-root:empty { display: none; }
+#panel-root:not(:empty) { flex: 0 0 380px; min-width: 0; }
+.receivables { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; width: 100%; max-width: 1100px; }
+#grid-wrap { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+#aggrid { width: 100%; min-width: 0; height: 100%; }
 
 .days-late { color: #b3322b; }
 .invoice-id-cell {
@@ -133,9 +136,12 @@ button.secondary { background: #27313a; }
 
 /* ---------- Side panel (customer view) ---------- */
 .panel {
-  position: fixed; top: 0; right: 0; width: min(420px, 100%); height: 100vh;
+  position: static; width: 100%; height: 100%; overflow-y: auto;
   background: var(--card); border-left: 1px solid var(--line); box-shadow: var(--shadow);
-  overflow-y: auto; z-index: 60; display: flex; flex-direction: column;
+  z-index: 60; display: flex; flex-direction: column;
+}
+@media (max-width: 899px) {
+  #panel-root:not(:empty) { position: fixed; inset: 0; z-index: 50; flex: none; }
 }
 .panel-header-card {
   background: var(--emerald-dark); color: #eef6f2; padding: 18px 20px;
@@ -170,12 +176,12 @@ button.secondary { background: #27313a; }
 }
 .panel-header-card .panel-close {
   background: transparent; border: 1px solid rgba(255,255,255,0.35); color: #fff;
-  padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 0.8rem;
-  display: inline-flex; align-items: center; line-height: 1;
+  width: auto; min-width: 32px; height: 32px; padding: 0; border-radius: 6px; cursor: pointer; font-size: 0.8rem;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
 }
 .panel-header-card .panel-close .icon { width: 16px; height: 16px; }
 
-.panel-body { padding: 16px 20px; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+.panel-body { padding: 16px 20px; flex: 1; overflow-x: hidden; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
 .panel-section {
   background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px;
 }
@@ -193,15 +199,21 @@ button.secondary { background: #27313a; }
 .evidence-list .evidence-icon { width: 16px; height: 16px; flex-shrink: 0; color: var(--emerald-dark); }
 .sample-footnote { color: var(--muted); font-size: 0.8rem; margin: 0; }
 
-.invoice-list { display: grid; gap: 8px; }
+.invoice-list { display: grid; gap: 8px; overflow-x: hidden; }
 .invoice-row {
-  display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line);
   border-radius: 10px; font-size: 0.88rem; background: #fff;
 }
+.invoice-row .inv-top {
+  display: flex; justify-content: space-between; align-items: baseline; min-width: 0;
+}
+.invoice-row .inv-bottom {
+  display: flex; gap: 10px; align-items: center; white-space: nowrap; min-width: 0;
+}
+.invoice-row .inv-bottom > * { min-width: 0; flex-shrink: 1; }
 .invoice-row.highlighted { background: rgba(201,151,47,0.12); border-left: 3px solid var(--gold); }
 .invoice-row .inv-id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem;
-  min-width: 110px; color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; color: var(--ink);
 }
 .invoice-row .inv-amount { font-weight: 800; margin-left: auto; font-variant-numeric: tabular-nums; }
 .invoice-row .inv-due { color: var(--muted); }
@@ -217,6 +229,12 @@ button.secondary { background: #27313a; }
 .promise-row .needs-confirm {
   font-size: 0.72rem; font-weight: 800; color: #d8752d; text-transform: uppercase; letter-spacing: 0.05em;
 }
+.note-form { display: flex; flex-direction: column; gap: 8px; }
+.note-form textarea { width: 100%; min-height: 80px; resize: vertical; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.note-form button { width: auto; }
+.note-result { margin-top: 6px; font-size: 0.88rem; }
+.promise-row .promise-amt { font-weight: 800; color: var(--ink); margin-left: auto; }
+.profile-pill { display: none; margin-left: 10px; padding: 2px 8px; border-radius: 10px; background: var(--gold); color: #4a3700; font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; vertical-align: middle; }
 @media (max-width: 860px) { .home-grid, .grid-2 { grid-template-columns: 1fr; } }
 
 /* ---------- UI layout (Receivables) ---------- */
@@ -289,6 +307,44 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; }
   color: var(--emerald-dark); padding: 12px 14px; border-radius: 12px; margin-top: 12px; font-size: 0.88rem;
 }
 
+/* ---------- Overview ---------- */
+.overview { padding: 24px; max-width: 1100px; margin: 0 auto; }
+.overview-header h1 { margin: 0 0 6px; font-size: 1.5rem; font-weight: 800; }
+.overview-sub { margin: 0 0 20px; color: var(--muted); font-size: 0.92rem; }
+.overview-hero {
+  background: var(--emerald-dark); color: var(--bg); border-radius: 16px; padding: 24px;
+  margin-bottom: 18px; display: flex; flex-direction: column; gap: 6px;
+}
+.overview-hero .hero-label { font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.85; }
+.overview-hero .hero-amount { font-size: 2.25rem; font-weight: 800; font-family: Georgia, 'Times New Roman', serif; line-height: 1; }
+.overview-hero .hero-sub { font-size: 0.88rem; opacity: 0.85; }
+.stat-cards { display: flex; gap: 12px; margin-bottom: 18px; }
+.stat-card {
+  flex: 1; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 16px; display: flex; gap: 10px; align-items: center;
+}
+.stat-icon { width: 32px; height: 32px; border-radius: 8px; background: rgba(28,42,42,0.06); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.stat-icon .icon { width: 18px; height: 18px; }
+.stat-count { font-size: 1.5rem; font-weight: 800; }
+.stat-label { font-size: 0.72rem; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.status-bars { display: flex; flex-direction: column; gap: 8px; }
+.status-bar {
+  display: flex; align-items: center; gap: 10px; height: 30px;
+}
+.bar-track { flex: 1; height: 10px; background: rgba(28,42,42,0.08); border-radius: 5px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 5px; }
+.bar-label { font-size: 0.82rem; font-weight: 800; white-space: nowrap; }
+.attention-list { display: flex; flex-direction: column; gap: 8px; }
+.attention-row {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 10px; background: #fff; cursor: pointer;
+}
+.attention-row:hover { border-color: var(--line); background: #f8f7f4; }
+.attention-customer { flex: 1; font-weight: 800; }
+.attention-owed { font-variant-numeric: tabular-nums; font-weight: 800; white-space: nowrap; }
+.attention-days { font-size: 0.78rem; font-weight: 800; color: #b3322b; white-space: nowrap; }
+.overview-footnote { color: var(--muted); font-size: 0.82rem; margin-top: 14px; }
+
 @media (max-width: 860px) {
   .layout { height: auto; flex-direction: column; }
   .sidebar { width: 100%; height: auto; flex-direction: row; overflow-x: auto; padding-bottom: 10px; }
@@ -296,3 +352,10 @@ h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; }
   .panel { width: 100%; }
   .main { padding: 12px; }
 }
+
+@media (max-width: 700px) {
+  .overview { padding: 12px; }
+  .stat-cards { flex-direction: column; }
+  .overview-hero .hero-amount { font-size: 1.75rem; }
+}
+#aggrid { height: calc(100vh - 150px); min-height: 400px; }

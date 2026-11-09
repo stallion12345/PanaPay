@@ -60,6 +60,8 @@ let pollTimer = null;
 let currentRoute = 'receivables';
 let initialLoad = true;
 let selectedInvoiceId = null;
+let pendingCustomerId = null;
+let overviewPollTimer = null;
 
 async function getJson(path) {
   const res = await fetch(path);
@@ -79,7 +81,7 @@ function renderShell() {
   return `
     <div class="layout">
       <aside class="sidebar">
-        <a class="brand" href="#/receivables" aria-label="PanaPay home">Pana<b>Pay</b></a>
+        <a class="brand" href="#/overview" aria-label="PanaPay home">Pana<b>Pay</b></a>
         <nav aria-label="Main navigation">
           <a href="#/overview" data-route="overview" class="nav-link">Overview</a>
           <a href="#/receivables" data-route="receivables" class="nav-link">Receivables</a>
@@ -91,9 +93,11 @@ function renderShell() {
           <h1 id="page-title">Receivables</h1>
           <div class="toolbar" id="toolbar"></div>
         </header>
-        <div id="panel-root"></div>
+        <div class="content-row">
+          <div id="view"></div>
+          <div id="panel-root"></div>
+        </div>
         <div id="modal-root"></div>
-        <div id="view"></div>
       </div>
     </div>
   `;
@@ -109,17 +113,19 @@ function renderApp() {
   if (!app.innerHTML.trim()) {
     app.innerHTML = renderShell();
   }
-  currentRoute = location.hash.replace(/^#\//, '') || 'receivables';
+  currentRoute = location.hash.replace(/^#\//, '') || 'overview';
   setupNav();
   if (currentRoute === 'overview') {
     stopPolling();
+    startOverviewPolling();
     renderOverview();
   } else {
+    stopOverviewPolling();
     renderReceivables();
   }
 }
 
-// ---------- Overview (placeholder) ----------
+// ---------- Overview ----------
 function renderOverview() {
   const title = document.getElementById('page-title');
   const toolbar = document.getElementById('toolbar');
@@ -127,12 +133,180 @@ function renderOverview() {
   title.textContent = 'Overview';
   toolbar.innerHTML = '';
   view.innerHTML = `
-    <div class="receivables">
-      <h2>Overview</h2>
-      <p class="empty-inline">Overview placeholder.</p>
-      <p style="color:var(--muted);">Receivables is the default view.</p>
+    <div class="overview">
+      <div id="overview-loading" class="loading-state" style="display:grid">
+        <div class="spinner" aria-hidden="true"></div><p>Loading overview...</p>
+      </div>
+      <div id="overview-error" style="display:none; background:rgba(179,50,43,0.09); border:1px solid rgba(179,50,43,0.22); color:var(--danger); padding:14px 16px; border-radius:12px; margin-bottom:12px; font-size:0.9rem;">
+        <div id="overview-error-msg"></div>
+        <button type="button" id="overview-retry" class="btn secondary" style="width:auto; margin-top:10px;">Retry</button>
+      </div>
+      <div id="overview-empty" class="empty-state" style="display:none">
+        <div style="font-size:1.1rem; font-weight:800;">No invoices yet</div>
+        <p style="color:var(--muted);">Create your first invoice to see the overview.</p>
+      </div>
+      <div id="overview-content" style="display:none"></div>
     </div>
   `;
+  document.getElementById('overview-retry')?.addEventListener('click', loadOverview);
+  loadOverview();
+}
+
+function summarizeReceivables(invoices) {
+  const owedCents = invoices.reduce((acc, inv) => {
+    const s = String(inv.status || '').toLowerCase();
+    if (s === 'paid' || s === 'paid_late') return acc;
+    return acc + (Number(inv.amountCents ?? 0) - Number(inv.paidCents ?? 0));
+  }, 0);
+
+  const counts = {};
+  const owedByStatus = {};
+  for (const inv of invoices) {
+    const s = String(inv.status || '').toLowerCase();
+    counts[s] = (counts[s] || 0) + 1;
+    if (s !== 'paid' && s !== 'paid_late') {
+      owedByStatus[s] = (owedByStatus[s] || 0) + (Number(inv.amountCents ?? 0) - Number(inv.paidCents ?? 0));
+    }
+  }
+
+  const attention = invoices.filter((inv) => {
+    const s = String(inv.status || '').toLowerCase();
+    return s === 'broken_promise' || s === 'overdue' || s === 'due_today' || s === 'partially_paid';
+  }).slice(0, 6);
+
+  const hasDemoData = invoices.some((inv) => inv.source === 'seeded');
+
+  return { owedCents, counts, owedByStatus, attention, hasDemoData };
+}
+
+function statusBarHtml(status, owed, counts, maxOwed) {
+  const info = STATUS_ICONS[status] || { label: status, icon: 'circle', color: '#5e6f6a' };
+  const width = Math.round((owed / maxOwed) * 100);
+  return `
+    <div class="status-bar">
+      <span class="status-chip" style="color:${info.color}; border-color:${tint(info.color, 0.2)}; background:${tint(info.color, 0.08)}">${icon(info.icon)}<span class="txt">${escapeHtml(info.label)}</span></span>
+      <div class="bar-track"><div class="bar-fill" style="width:${width}%; background:${info.color}"></div></div>
+      <span class="bar-label">${escapeHtml(formatMoney(owed))} \u00b7 ${counts[status] ?? 0} invoice${counts[status] === 1 ? '' : 's'}</span>
+    </div>
+  `;
+}
+
+
+// ---------- Overview helpers ----------
+
+function buildOverviewHtml(s, invoices) {
+  const unpaid = invoices.filter((inv) => {
+    const st = String(inv.status || '').toLowerCase();
+    return st !== 'paid' && st !== 'paid_late';
+  });
+  const maxOwed = Math.max(1, ...Object.values(s.owedByStatus).filter((v) => v > 0));
+
+  const bars = Object.entries(s.owedByStatus)
+    .filter(([status, owed]) => owed > 0)
+    .map(([status, owed]) => statusBarHtml(status, owed, s.counts, maxOwed))
+    .join('');
+
+  const attentionRows = s.attention.map((inv) => {
+    const owed = Number(inv.amountCents ?? 0) - Number(inv.paidCents ?? 0);
+    const daysLate = Number(inv.daysLate ?? 0);
+    return `
+      <div class="attention-row" onclick="handleAttentionClick(${Number(inv.customerId)})">
+        <div class="attention-customer">${escapeHtml(inv.customerName || '')}</div>
+        <div class="attention-owed">${formatMoney(owed)}</div>
+        <div class="attention-status">${statusChip(inv.status)}</div>
+        ${daysLate > 0 ? `<div class="attention-days">${daysLate} days late</div>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  const statCards = [
+    { status: 'overdue', label: 'Overdue' },
+    { status: 'broken_promise', label: 'Promise broken' },
+    { status: 'promised', label: 'Promised' },
+  ].map(({ status, label }) => {
+    const info = STATUS_ICONS[status] || { label, icon: 'circle', color: '#5e6f6a' };
+    const count = s.counts[status] ?? 0;
+    return `
+      <div class="stat-card">
+        <div class="stat-icon" style="color:${info.color}">${icon(info.icon)}</div>
+        <div class="stat-count">${count}</div>
+        <div class="stat-label">${escapeHtml(label)}</div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <header class="overview-header">
+      <h1>Overview</h1>
+      <p class="overview-sub">Know who owes you, what they promised, and whether they actually paid.</p>
+    </header>
+
+    <div class="card overview-hero">
+      <div class="hero-label">Owed to you</div>
+      <div class="hero-amount">${formatMoney(s.owedCents)}</div>
+      <div class="hero-sub">across ${unpaid.length} unpaid invoice${unpaid.length === 1 ? '' : 's'}</div>
+    </div>
+
+    <div class="stat-cards">${statCards}</div>
+
+    <div class="card">
+      <h3>Receivables by status</h3>
+      <div class="status-bars">${bars}</div>
+    </div>
+
+    <div class="card">
+      <h3>Needs attention</h3>
+      <div class="attention-list">${attentionRows || '<p class="empty-inline">Nothing needs attention right now.</p>'}</div>
+    </div>
+
+    ${s.hasDemoData ? '<p class="overview-footnote">Includes demo data.</p>' : ''}
+  `;
+}
+
+async function loadOverview() {
+  const loading = document.getElementById('overview-loading');
+  const error = document.getElementById('overview-error');
+  const empty = document.getElementById('overview-empty');
+  const content = document.getElementById('overview-content');
+  loading.style.display = 'grid';
+  error.style.display = 'none';
+  empty.style.display = 'none';
+  content.style.display = 'none';
+  try {
+    const data = await getJson('/api/receivables');
+    const invoices = Array.isArray(data.invoices) ? data.invoices : [];
+    if (invoices.length === 0) {
+      empty.style.display = 'grid';
+      return;
+    }
+    loading.style.display = 'none';
+    content.style.display = 'block';
+    const s = summarizeReceivables(invoices);
+    content.innerHTML = buildOverviewHtml(s, invoices);
+  } catch (err) {
+    loading.style.display = 'none';
+    error.style.display = 'block';
+    document.getElementById('overview-error-msg').textContent = 'Unable to load overview.';
+    document.getElementById('overview-error-msg').innerHTML = 'Unable to load overview. ' + escapeHtml(err.message);
+  }
+}
+
+function handleAttentionClick(customerId) {
+  pendingCustomerId = customerId;
+  location.hash = '#/receivables';
+}
+
+function startOverviewPolling() {
+  stopOverviewPolling();
+  if (currentRoute !== 'overview') return;
+  if (document.visibilityState !== 'visible') return;
+  overviewPollTimer = setInterval(() => {
+    if (document.visibilityState === 'visible' && currentRoute === 'overview') loadOverview();
+  }, 5000);
+}
+
+function stopOverviewPolling() {
+  if (overviewPollTimer) { clearInterval(overviewPollTimer); overviewPollTimer = null; }
 }
 // ---------- Receivables ----------
 function formatDue(value) {
@@ -151,16 +325,15 @@ function invoiceIdRenderer(p) {
   return `<span class="invoice-id-cell" title="${escapeHtml(id)}">${escapeHtml(short)}</span>`;
 }
 const COLUMNS = [
-  { headerName: 'Customer', field: 'customerName', minWidth: 170, sortable: true, flex: 1 },
-  { headerName: 'Invoice', field: 'paypalInvoiceId', minWidth: 150, sortable: true, flex: 1, cellRenderer: invoiceIdRenderer },
-  { headerName: 'Amount', field: 'amountCents', minWidth: 120, type: 'rightAligned',
+  { headerName: 'Customer', field: 'customerName', minWidth: 130, sortable: true, flex: 1 },
+  { headerName: 'Invoice', field: 'paypalInvoiceId', minWidth: 120, sortable: true, flex: 1, cellRenderer: invoiceIdRenderer },
+  { headerName: 'Amount', field: 'amountCents', minWidth: 90, type: 'rightAligned',
     valueFormatter: (p) => formatMoney(p.value), cellClass: 'amt-cell', flex: 1 },
-  { headerName: 'Due', field: 'dueAt', minWidth: 140, valueFormatter: (p) => formatDue(p.value), flex: 1 },
-  { headerName: 'Days late', field: 'daysLate', minWidth: 110, type: 'rightAligned',
+  { headerName: 'Due', field: 'dueAt', minWidth: 100, valueFormatter: (p) => formatDue(p.value), flex: 1 },
+  { headerName: 'Days late', field: 'daysLate', minWidth: 80, type: 'rightAligned',
     valueFormatter: (p) => (p.value == null || p.value === 0) ? '—' : String(p.value),
     cellClass: (p) => (p.value != null && p.value > 0) ? 'days-late' : '', flex: 1 },
-  { headerName: 'Status', field: 'status', minWidth: 170, cellRenderer: statusCellRenderer, flex: 1 },
-  { headerName: 'Next action', field: 'nextAction', minWidth: 140, valueFormatter: () => '—', flex: 1 },
+  { headerName: 'Status', field: 'status', minWidth: 140, cellRenderer: statusCellRenderer, flex: 1 },
 ];
 function initGrid() {
   gridApi = agGrid.createGrid(document.getElementById('aggrid'), {
@@ -177,7 +350,7 @@ function initGrid() {
       openSidePanel(event.data.customerId);
     }
   });
-}
+  };
 function syncGrid(invoices) {
   const byId = new Map(invoices.map((inv) => [Number(inv.invoiceId), inv]));
   const selectedId = gridApi.getSelectedRows()[0]?.invoiceId;
@@ -239,6 +412,11 @@ async function loadReceivables() {
     loading.style.display = 'none';
     if (invoices.length === 0) empty.style.display = 'grid';
     else wrap.style.display = 'block';
+    if (pendingCustomerId) {
+      const cid = pendingCustomerId;
+      pendingCustomerId = null;
+      openSidePanel(cid);
+    }
   } catch (err) {
     loading.style.display = 'none';
     error.style.display = 'block';
@@ -282,6 +460,7 @@ async function openSidePanel(customerId) {
           <div class="header-left">
             <h2 class="customer-name" id="panel-customer-name">Loading…</h2>
             <span class="demo-tag" id="panel-demo-tag">Demo data</span>
+            <span class="profile-pill" id="panel-profile-pill"></span>
           </div>
           <button type="button" class="panel-close" id="btn-close-panel" aria-label="Close panel">${icon('x')}</button>
         </div>
@@ -300,71 +479,65 @@ async function openSidePanel(customerId) {
   try {
     const data = await getJson(`/api/customers/${customerId}`);
     renderSidePanel(data);
-    document.getElementById('panel-demo-tag').style.display = data.customer?.source === 'seeded' ? 'inline-block' : 'none';
-    window.addEventListener('resize', positionPanel);
+    document.getElementById('panel-demo-tag').style.display = data.invoices?.some((inv) => inv.source === 'seeded') ? 'inline-block' : 'none';
+    gridApi?.setColumnsVisible(['dueAt'], false);
+    const fit = () => gridApi?.sizeColumnsToFit();
+    requestAnimationFrame(fit);
+    setTimeout(fit, 250);
   } catch (err) {
     document.getElementById('panel-body').innerHTML = `<p style="color:var(--danger); padding:16px;">Unable to load customer: ${escapeHtml(err.message)}</p>`;
   }
 }
 function positionPanel() {
+  // Flex layout handles panel positioning; no fixed/margin styles needed
   const panel = document.getElementById('side-panel');
   if (!panel) return;
-  const topbar = document.querySelector('.topbar');
-  const top = topbar ? Math.round(topbar.getBoundingClientRect().bottom) : 0;
+  // Only resize column fit on desktop toggle
   const desktop = window.innerWidth >= 900;
-  const gridWrap = document.getElementById('grid-wrap');
   if (desktop) {
-    panel.style.position = 'fixed';
-    panel.style.top = top + 'px';
-    panel.style.right = '0';
-    panel.style.width = '420px';
-    panel.style.height = Math.max(0, window.innerHeight - top) + 'px';
-    if (gridWrap) gridWrap.style.marginRight = '440px';
-  } else {
-    panel.style.position = 'fixed';
-    panel.style.top = '0';
-    panel.style.right = '0';
-    panel.style.width = '100vw';
-    panel.style.height = '100vh';
-    panel.style.left = 'auto';
-    if (gridWrap) gridWrap.style.marginRight = '';
+    gridApi?.sizeColumnsToFit();
   }
-  gridApi?.sizeColumnsToFit();
 }
 function closeSidePanel() {
   document.getElementById('panel-root').innerHTML = '';
   gridApi?.deselectAll();
   selectedInvoiceId = null;
-  window.removeEventListener('resize', positionPanel);
-  const gridWrap = document.getElementById('grid-wrap');
-  if (gridWrap) gridWrap.style.marginRight = '';
-  gridApi?.sizeColumnsToFit();
+  gridApi?.setColumnsVisible(['dueAt'], true);
+  const fit = () => gridApi?.sizeColumnsToFit();
+  requestAnimationFrame(fit);
+  setTimeout(fit, 250);
 }
 function renderSidePanel(data) {
   const { customer, invoices = [], notes = [], promises = [], profile } = data || {};
   const body = document.getElementById('panel-body');
   const enough = Boolean(profile?.enoughHistory);
   const evidence = Array.isArray(profile?.evidence) ? profile.evidence : [];
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
   document.getElementById('panel-customer-name').textContent = customer?.name ?? 'Customer';
-  document.getElementById('panel-demo-tag').style.display = customer?.source === 'seeded' ? 'inline-block' : 'none';
+  document.getElementById('panel-demo-tag').style.display = invoices.some((inv) => inv.source === 'seeded') ? 'inline-block' : 'none';
+  const pill = document.getElementById('panel-profile-pill');
+  if (enough && profile?.label) { pill.textContent = profile.label; pill.style.display = 'inline-block'; } else { pill.style.display = 'none'; }
   document.getElementById('panel-outstanding').textContent = formatMoney(profile?.outstandingCents ?? 0);
   document.getElementById('panel-paid-late').textContent = String(profile?.paidLateCount ?? 0);
   document.getElementById('panel-promises-kept').textContent = `${profile?.promisesKept ?? 0} of ${profile?.promisesMade ?? 0}`;
 
   const whatWeKnow = enough
-    ? `<ul class="evidence-list">${evidence.map((e) => `<li>${icon('dot')}${escapeHtml(e)}</li>`).join('')}</ul>
-       <p class="sample-footnote">Sample size: ${profile?.invoiceCount ?? 0} invoice${profile?.invoiceCount === 1 ? '' : 's'}.</p>`
+    ? `<ul class="evidence-list">${evidence.map((e) => `<li>${icon('dot')}${escapeHtml(e)}</li>`).join('')}</ul>`
     : '<p class="empty-inline">Not enough history yet</p>';
 
   const invList = invoices.map((inv) => {
     const info = STATUS_ICONS[String(inv.status).toLowerCase()] || { label: String(inv.status), icon: 'circle', color: '#5e6f6a' };
     const days = inv.daysLate;
-    return `<div class="invoice-row" data-id="${inv.id}">
-      <div class="inv-id" title="${escapeHtml(inv.paypal_invoice_id || '')}">${escapeHtml(inv.paypal_invoice_id || 'Invoice')}</div>
-      <div class="inv-amount">${formatMoney(inv.amount_cents)}</div>
-      <div class="inv-due">${formatDue(inv.due_at)}</div>
-      <div class="inv-status">${statusChip(inv.status)}</div>
-      <div class="inv-days">${days > 0 ? `${days} days late` : ''}</div>
+    return `<div class="invoice-row${String(inv.id) === String(selectedInvoiceId) ? ' highlighted' : ''}" data-id="${inv.id}">
+      <div class="inv-top">
+        <div class="inv-id" title="${escapeHtml(inv.paypal_invoice_id || '')}">${escapeHtml(inv.paypal_invoice_id || 'Invoice')}</div>
+        <div class="inv-amount">${formatMoney(inv.amount_cents)}</div>
+      </div>
+      <div class="inv-bottom" style="white-space: nowrap;">
+        <div class="inv-due">${formatDue(inv.due_at)}</div>
+        <div class="inv-status">${statusChip(inv.status)}</div>
+        ${days > 0 ? `<div class="inv-days">${days} days late</div>` : ''}
+      </div>
     </div>`;
   }).join('');
 
@@ -372,22 +545,76 @@ function renderSidePanel(data) {
 
   const promiseItems = (promises || []).map((p) => {
     const confirmed = String(p.status || '').toLowerCase() !== 'unconfirmed';
-    const info = STATUS_ICONS[String(p.status || 'unconfirmed').toLowerCase()] || { label: String(p.status), icon: 'circle', color: '#5e6f6a' };
+    let promiseStatus = p.status || 'unconfirmed';
+    if (promiseStatus === 'open' && p.promised_date && String(p.promised_date) < today) promiseStatus = 'broken';
+    const info = STATUS_ICONS[String(promiseStatus).toLowerCase()] || { label: String(promiseStatus), icon: 'circle', color: '#5e6f6a' };
+    const amt = Number(p.promised_cents) > 0 ? `<span class="promise-amt">${escapeHtml(formatMoney(p.promised_cents))}</span>` : '';
     return `<div class="promise-row">
       <span class="status-chip" style="color:${info.color}; border-color:${tint(info.color, 0.2)}; background:${tint(info.color, 0.08)}">${icon(info.icon)}<span class="txt">${escapeHtml(info.label)}</span></span>
       <span class="promise-date">${formatDue(p.promised_date)}</span>
+      ${amt}
       <span class="promise-confidence">${Math.round(Number(p.confidence ?? 0) * 100)}%</span>
       <span class="promise-reason">${escapeHtml(p.reason || '')}</span>
       ${confirmed ? '' : '<span class="needs-confirm">Needs confirmation</span>'}
     </div>`;
   }).join('') || '<p class="empty-inline">No promises.</p>';
 
+  const noteForm = `<form id="note-form">
+  <textarea id="note-text" maxlength="1000" placeholder="Paste what the customer said, e.g. I'll pay Friday"></textarea>
+  <button type="submit" id="btn-add-note" class="btn secondary">Add note</button>
+</form>
+<div id="note-result"></div>`;
+
   body.innerHTML = `
     <div class="panel-section"><h3>What we know</h3><div class="evidence-list">${whatWeKnow}</div></div>
     <div class="panel-section"><h3>Invoices (${invoices.length})</h3><div class="invoice-list">${invList || '<p class="empty-inline">No invoices.</p>'}</div></div>
-    <div class="panel-section"><h3>Notes and promises</h3><div class="notes-list">${noteItems}${promiseItems}</div></div>
+    <div class="panel-section"><h3>Notes and promises</h3><div class="notes-list">${noteForm}${noteItems}${promiseItems}</div></div>
     <div class="panel-section"><h3>Next action</h3><p style="margin:0; color:var(--muted); font-size:0.88rem;">Next action rules coming soon.</p></div>
   `;
+  document.getElementById('note-form')?.addEventListener('submit', (e) => handleNoteSubmit(e, Number(customer?.id)));
+}
+
+async function handleNoteSubmit(e, customerId) {
+  e.preventDefault();
+  const textarea = document.getElementById('note-text');
+  const btn = document.getElementById('btn-add-note');
+  const result = document.getElementById('note-result');
+  if (!textarea || !btn || !result) return;
+  const text = textarea.value.trim();
+  if (!text) return;
+  btn.disabled = true;
+  btn.textContent = 'Reading...';
+  result.innerHTML = '';
+  try {
+    const data = await postJson(`/api/customers/${customerId}/notes`, { text });
+    textarea.value = '';
+    btn.disabled = false;
+    btn.textContent = 'Add note';
+    const state = data.extraction;
+    let msg;
+    if (state === 'promise') {
+      msg = 'Promise recorded for ' + escapeHtml(String(data.promise?.promised_date ?? '')) + '.';
+    } else if (state === 'needs_confirmation') {
+      msg = 'Recorded, but it needs your confirmation.';
+    } else if (state === 'no_promise') {
+      msg = 'Note saved. No clear promise found.';
+    } else if (state === 'failed') {
+      msg = 'Note saved, but the AI could not read it.';
+    } else if (state === 'no_open_invoice') {
+      msg = 'Note saved. This customer has no open invoice.';
+    } else {
+      msg = 'Note saved.';
+    }
+    const fresh = await getJson(`/api/customers/${customerId}`);
+    renderSidePanel(fresh);
+    const newResult = document.getElementById('note-result');
+    if (newResult) newResult.innerHTML = `<p style="margin:4px 0; font-size:0.88rem;">${msg}</p>`;
+    loadReceivables();
+  } catch (err) {
+    result.textContent = err.message;
+    btn.disabled = false;
+    btn.textContent = 'Add note';
+  }
 }
 
 // ---------- New invoice form ----------
@@ -479,5 +706,4 @@ document.addEventListener('keydown', (e) => {
 });
 window.addEventListener('load', renderApp);
 window.addEventListener('hashchange', renderApp);
-window.addEventListener('resize', positionPanel);
 
