@@ -263,31 +263,43 @@ function buildOverviewHtml(s, invoices) {
   `;
 }
 
+let lastOverviewJson = '';
+
 async function loadOverview() {
   const loading = document.getElementById('overview-loading');
   const error = document.getElementById('overview-error');
   const empty = document.getElementById('overview-empty');
   const content = document.getElementById('overview-content');
-  loading.style.display = 'grid';
-  error.style.display = 'none';
-  empty.style.display = 'none';
-  content.style.display = 'none';
+  const showing = content.style.display === 'block';
+  if (!showing) {
+    loading.style.display = 'grid';
+    error.style.display = 'none';
+    empty.style.display = 'none';
+    content.style.display = 'none';
+  }
   try {
     const data = await getJson('/api/receivables');
+    if (currentRoute !== 'overview') return;
     const invoices = Array.isArray(data.invoices) ? data.invoices : [];
     if (invoices.length === 0) {
+      loading.style.display = 'none';
+      content.style.display = 'none';
       empty.style.display = 'grid';
       return;
     }
+    const json = JSON.stringify(invoices);
+    if (showing && json === lastOverviewJson) return;
+    lastOverviewJson = json;
     loading.style.display = 'none';
+    error.style.display = 'none';
     content.style.display = 'block';
     const s = summarizeReceivables(invoices);
     content.innerHTML = buildOverviewHtml(s, invoices);
   } catch (err) {
+    if (showing) return;
     loading.style.display = 'none';
     error.style.display = 'block';
-    document.getElementById('overview-error-msg').textContent = 'Unable to load overview.';
-    document.getElementById('overview-error-msg').innerHTML = 'Unable to load overview. ' + escapeHtml(err.message);
+    document.getElementById('overview-error-msg').textContent = 'Unable to load overview. ' + err.message;
   }
 }
 
@@ -310,9 +322,9 @@ function stopOverviewPolling() {
 }
 // ---------- Receivables ----------
 function formatDue(value) {
-  if (!value) return '—';
+  if (!value) return 'No due date';
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '—';
+  if (Number.isNaN(d.getTime())) return 'No due date';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 function statusCellRenderer(params) {
