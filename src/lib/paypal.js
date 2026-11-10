@@ -320,3 +320,28 @@ export async function getInvoice(invoiceId) {
 
   return readPayPalResponse(response);
 }
+
+export async function remindInvoice(invoiceId, { subject, note, sendToInvoicer = true } = {}) {
+  if (!invoiceId) {
+    throw new Error('Missing invoiceId.');
+  }
+
+  const token = await getToken();
+  const body = { send_to_invoicer: sendToInvoicer };
+  if (subject) body.subject = String(subject).slice(0, 200);
+  if (note) body.note = String(note).slice(0, 1000);
+
+  const response = await fetch(`${PAYPAL_BASE}/v2/invoicing/invoices/${encodeURIComponent(String(invoiceId))}/remind`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (response.status === 204) {
+    return { ok: true };
+  }
+  return readPayPalResponse(response);
+}

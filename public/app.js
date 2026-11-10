@@ -654,8 +654,9 @@ function renderNextActionCard(inv) {
   if (!action) {
     return '<div class="panel-section"><h3>Next action</h3><p class="empty-inline">No open invoice.</p></div>';
   }
+    const isLive = inv.source !== 'seeded' && inv.paypal_invoice_id && !String(inv.paypal_invoice_id).startsWith('SEED-');
   const draftButton = action.draftable
-    ? `<button type="button" class="btn secondary" id="btn-draft" data-invoice="${escapeHtml(inv.id)}">Draft message</button>`
+    ? `<button type="button" class="btn secondary" id="btn-draft" data-invoice="${escapeHtml(inv.id)}" data-live="${isLive ? '1' : ''}">Draft message</button>`
     : '';
   return `<div class="panel-section">
     <h3>Next action</h3>
@@ -677,17 +678,18 @@ function wireNextAction() {
     area.textContent = '';
     try {
       const data = await postJson(`/api/invoices/${encodeURIComponent(button.dataset.invoice)}/draft`, {});
-      area.innerHTML = `
+            area.innerHTML = `
         <textarea id="draft-text" class="draft-text" rows="6"></textarea>
         <div class="draft-actions">
           <button type="button" class="btn secondary" id="btn-copy-draft">Copy</button>
+          ${button.dataset.live ? '<button type="button" class="btn" id="btn-send-reminder">Send via PayPal</button>' : ''}
           <span class="draft-note" id="draft-note"></span>
         </div>`;
       document.getElementById('draft-text').value = data.draft;
       document.getElementById('draft-note').textContent = data.source === 'ai'
-        ? 'Written by AI from the facts above. Check it before you send it.'
+        ? 'Written from the facts above. Check it before you send it.'
         : 'Standard wording. The AI was unavailable.';
-      document.getElementById('btn-copy-draft').addEventListener('click', async () => {
+            document.getElementById('btn-copy-draft').addEventListener('click', async () => {
         const textarea = document.getElementById('draft-text');
         try {
           await navigator.clipboard.writeText(textarea.value);
@@ -697,6 +699,26 @@ function wireNextAction() {
         }
         document.getElementById('draft-note').textContent = 'Copied.';
       });
+
+      const sendBtn = document.getElementById('btn-send-reminder');
+      if (sendBtn) {
+        sendBtn.addEventListener('click', async () => {
+          const noteEl = document.getElementById('draft-note');
+          sendBtn.disabled = true;
+          sendBtn.textContent = 'Sending...';
+          try {
+            await postJson(`/api/invoices/${encodeURIComponent(button.dataset.invoice)}/remind`, {
+              draft: document.getElementById('draft-text').value,
+            });
+            sendBtn.textContent = 'Sent';
+            noteEl.textContent = 'Reminder sent through PayPal.';
+          } catch (err) {
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Send via PayPal';
+            noteEl.textContent = err.message;
+          }
+        });
+      }
     } catch (err) {
       area.textContent = err.message;
     } finally {

@@ -7,13 +7,13 @@ import { db, ensureDefaultMerchant } from './db.js';
 import { categorize } from './lib/categorizer.js';
 import { evaluateEscalation } from './lib/escalation-rules.js';
 import { limitAlarm, lowPoint, projectBalance, weeklyBuckets } from './lib/forecast.js';
-import { createInvoice, createPayout, extractInvoiceId, getInvoice, sendInvoice, verifyWebhookSignature } from './lib/paypal.js';
+import { createInvoice, createPayout, remindInvoice, extractInvoiceId, getInvoice, sendInvoice, verifyWebhookSignature } from './lib/paypal.js';
 import { derive, toChicagoDateKey, computeDaysLate } from './lib/receivables/status.js';
 import { buildProfile } from './lib/receivables/profile.js';
 import { callModel } from './lib/llm.js';
 import { extractPromise } from './lib/receivables/extract.js';
 import { computeNextAction, pickPromise } from './lib/receivables/nextAction.js';
-import { buildFacts, draftMessage } from './lib/receivables/draft.js';
+import { buildFacts, checkDraft, draftMessage } from './lib/receivables/draft.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const app = express();
 const port = Number.parseInt(process.env.PORT || '3000', 10);
@@ -705,6 +705,92 @@ app.post('/api/invoices', async (req, res) => {
     const message = apiError && typeof apiError === 'object' && apiError.message ? apiError.message : (error && error.message ? error.message : 'PayPal invoice request failed.');
     return res.status(502).json({ ok: false, error: { name, message } });
   }
+});
+
+app.post('/api/invoices/:id/remind', async (req, res) => {
+  const invoice = db
+    .prepare('SELECT * FROM invoice WHERE id = ? AND merchant_id = ?')
+    .get(Number(req.params.id), DEFAULT_MERCHANT_ID);
+  if (!invoice) {
+    return res.status(404).json({ ok: false, error: 'Invoice not found.' });
+  }
+
+  if (
+    invoice.source === 'seeded' ||
+    !invoice.paypal_invoice_id ||
+    String(invoice.paypal_invoice_id).startsWith('SEED-')
+  ) {
+    return res.status(400).json({
+      ok: false,
+      error: 'This invoice was not issued through PayPal, so PayPal cannot send a reminder for it.',
+    });
+  }
+
+  const draftText = typeof req.body?.draft === 'string' ? req.body.draft.trim() : '';
+
+  const customer = db.prepare('SELECT * FROM customer WHERE id = ?').get(invoice.customer_id);
+  const merchant = db.prepare('SELECT name FROM merchant WHERE id = ?').get(DEFAULT_MERCHANT_ID);
+  const nowIso = new Date().toISOString();
+  const allPromises = db
+    .prepare('SELECT * FROM promise WHERE customer_id = ? AND merchant_id = ?')
+    .all(invoice.customer_id, DEFAULT_MERCHANT_ID);
+  const invoicePromises = allPromises.filter((p) => p.invoice_id === invoice.id);
+  const customerInvoices = db
+    .prepare('SELECT * FROM invoice WHERE customer_id = ? AND merchant_id = ?')
+    .all(invoice.customer_id, DEFAULT_MERCHANT_ID);
+
+  const derived = derive({ invoice, promises: invoicePromises, now: nowIso });
+  if (derived.status === 'paid' || derived.status === 'paid_late') {
+    return res.status(400).json({ ok: false, error: 'This invoice is already paid.' });
+  }
+
+  const profile = buildProfile({ invoices: customerInvoices, promises: allPromises, payments: [], now: nowIso });
+  const daysLate = computeDaysLate(invoice, nowIso);
+  const owedCents = invoice.amount_cents - invoice.paid_cents;
+  const promise = pickPromise(invoicePromises);
+  const action = computeNextAction({ status: derived.status, daysLate, owedCents, promise, label: profile.label });
+
+  if (!action.draftable) {
+    return res.status(400).json({ ok: false, error: 'No reminder is needed for this invoice.' });
+  }
+
+  const facts = buildFacts({
+    customerName: customer?.name,
+    businessName: merchant?.name,
+    owedCents,
+    dueDate: String(invoice.due_at ?? '').slice(0, 10),
+    daysLate,
+    promisedDate: promise?.promised_date ?? null,
+    action,
+  });
+
+  const problem = checkDraft(draftText, facts);
+  if (problem) {
+    return res.status(400).json({ ok: false, error: `This message cannot be sent (${problem}).`, reason: problem });
+  }
+
+  const sendReminder = app.locals.remindInvoice ?? remindInvoice;
+  try {
+    await sendReminder(invoice.paypal_invoice_id, {
+      subject: `Payment reminder from ${merchant?.name ?? 'your supplier'}`,
+      note: draftText,
+    });
+  } catch (error) {
+    console.error('[remind] PayPal reminder failed:', error?.message ?? error);
+    if (error?.status === 429) {
+      return res.status(429).json({
+        ok: false,
+        error: 'PayPal allows only two reminders per day for an invoice. Try again tomorrow.',
+      });
+    }
+    return res.status(502).json({ ok: false, error: 'PayPal could not send the reminder.' });
+  }
+
+  db.prepare(
+    'INSERT INTO customer_note (merchant_id, customer_id, invoice_id, text, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(DEFAULT_MERCHANT_ID, invoice.customer_id, invoice.id, `Reminder sent via PayPal: ${draftText}`, nowIso);
+
+  res.json({ ok: true, sentAt: nowIso });
 });
 
 app.post('/api/assistant', async (req, res) => {
